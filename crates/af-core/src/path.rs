@@ -505,4 +505,145 @@ mod tests {
             Err(PathError::Escape(_))
         ));
     }
+
+    // F7: path edge cases.
+
+    fn utf16(units: &[u16]) -> Name {
+        Name::from_utf16(units)
+    }
+
+    fn round_trip(n: &Name) {
+        assert_eq!(
+            Name::parse(&n.display(), n.kind()).as_ref(),
+            Ok(n),
+            "{}",
+            n.display()
+        );
+    }
+
+    #[test]
+    fn foo_and_foo_lowercase() {
+        let mut win = PathIndex::new(CasePolicy::Insensitive);
+        win.insert(wpath(&["Foo"]), "upper");
+        win.insert(wpath(&["foo"]), "lower");
+        let both: Vec<&str> = win.get(&wpath(&["FOO"])).iter().map(|(_, v)| *v).collect();
+        assert_eq!(both, ["upper", "lower"], "both kept, both found");
+
+        let mut linux = PathIndex::new(CasePolicy::Exact);
+        linux.insert(lpath(&["Foo"]), "upper");
+        linux.insert(lpath(&["foo"]), "lower");
+        assert_eq!(linux.get(&lpath(&["foo"]))[0].1, "lower");
+        assert_eq!(linux.get(&lpath(&["Foo"]))[0].1, "upper");
+        assert!(linux.get(&lpath(&["FOO"])).is_empty());
+        assert_ne!(wpath(&["Foo"]).display(WIN), wpath(&["foo"]).display(WIN));
+    }
+
+    #[test]
+    fn non_utf8_bytes() {
+        let latin1 = Name::from_bytes(b"caf\xe9.txt");
+        let utf8 = Name::from_text("café.txt", NameKind::Bytes);
+        assert_eq!(latin1.display(), "caf\\xe9.txt");
+        assert_eq!(utf8.display(), "café.txt");
+        assert_ne!(latin1.key(CasePolicy::Exact), utf8.key(CasePolicy::Exact));
+        round_trip(&latin1);
+        round_trip(&utf8);
+        // Invalid bytes next to valid multi-byte text.
+        let mixed = Name::from_bytes(b"\xff\xc3\xa9\xc3");
+        assert_eq!(mixed.display(), "\\xffé\\xc3");
+        round_trip(&mixed);
+        // Found again by the typed display form.
+        let mut idx = PathIndex::new(CasePolicy::Exact);
+        idx.insert(ViewPath::new(vec![latin1.clone()]), 1);
+        let typed = ViewPath::parse("/caf\\xe9.txt", LINUX, NameKind::Bytes).unwrap();
+        assert_eq!(idx.get(&typed).len(), 1);
+    }
+
+    #[test]
+    fn invalid_utf16() {
+        let mut units: Vec<u16> = "report".encode_utf16().collect();
+        units.push(0xd800);
+        units.extend(".txt".encode_utf16());
+        let lone_high = utf16(&units);
+        assert_eq!(lone_high.display(), "report\\u{d800}.txt");
+        assert_eq!(
+            lone_high.key(CasePolicy::Insensitive),
+            "REPORT\\u{d800}.TXT"
+        );
+        round_trip(&lone_high);
+        // A lone low surrogate, and a pair in the wrong order, are two escapes.
+        let reversed = utf16(&[0xdc00, 0xd800]);
+        assert_eq!(reversed.display(), "\\u{dc00}\\u{d800}");
+        round_trip(&reversed);
+        // A correct pair is one character.
+        let pair = utf16(&[0xd83d, 0xde00]);
+        assert_eq!(pair.display(), "\u{1f600}");
+        round_trip(&pair);
+        // Surrogates can't be typed into byte names.
+        assert!(Name::parse("\\u{d800}", NameKind::Bytes).is_err());
+    }
+
+    #[test]
+    fn unix_name_with_a_backslash_stays_one_name() {
+        let p = ViewPath::new(vec![
+            Name::from_text("dir", NameKind::Bytes),
+            Name::from_bytes(b"a\\b"),
+        ]);
+        assert_eq!(p.names().len(), 2);
+        assert_eq!(p.display(LINUX), "/dir/a\\u{5c}b");
+        let back = ViewPath::parse(&p.display(LINUX), LINUX, NameKind::Bytes).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.names()[1], Name::from_bytes(b"a\\b"));
+        // Typed with a bare backslash it is refused, not split or guessed.
+        assert!(matches!(
+            ViewPath::parse("/dir/a\\b", LINUX, NameKind::Bytes),
+            Err(PathError::Escape(_) | PathError::Unescaped(_))
+        ));
+        // A name whose text looks like an escape survives too.
+        let looks_escaped = Name::from_bytes(b"\\u{41}");
+        assert_eq!(looks_escaped.display(), "\\u{5c}u{41}");
+        round_trip(&looks_escaped);
+    }
+
+    #[test]
+    fn control_characters_are_escaped() {
+        let n = Name::from_text("evil\nname\u{1b}[31m", NameKind::Utf16);
+        assert_eq!(n.display(), "evil\\u{a}name\\u{1b}[31m");
+        assert!(!n.display().chars().any(char::is_control));
+        round_trip(&n);
+    }
+
+    #[test]
+    fn backslash_view_blind_spot_is_refused_not_misread() {
+        // A folder really named `u{41}` below `dir` can't be typed with backslash separators:
+        // the text reads as the escape for `A`, and since that isn't canonical it is refused.
+        assert!(ViewPath::parse("\\dir\\u{41}", WIN, NameKind::Utf16).is_err());
+        let real = wpath(&["dir", "u{41}"]);
+        assert_eq!(real.display(WIN), "\\dir\\u{41}");
+        // The key still tells them apart, and lookups by built paths work.
+        assert_ne!(
+            real.key(CasePolicy::Insensitive),
+            wpath(&["dirA"]).key(CasePolicy::Insensitive)
+        );
+    }
+
+    #[test]
+    fn displays_never_collide() {
+        let names = [
+            Name::from_bytes(b"a\\b"),
+            Name::from_bytes(b"a\\u{5c}b"),
+            Name::from_bytes(b"a\xffb"),
+            Name::from_text("a\\xffb", NameKind::Bytes),
+            Name::from_text("a\u{fffd}b", NameKind::Bytes),
+            utf16(&[0x61, 0xd800, 0x62]),
+            Name::from_text("a\\u{d800}b", NameKind::Utf16),
+            Name::from_text("ab", NameKind::Utf16),
+        ];
+        let mut shown: Vec<String> = names.iter().map(Name::display).collect();
+        for n in &names {
+            round_trip(n);
+        }
+        shown.sort();
+        shown.dedup();
+        assert_eq!(shown.len(), names.len(), "{shown:?}");
+    }
 }
