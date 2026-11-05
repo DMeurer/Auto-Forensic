@@ -13,10 +13,10 @@
 //! borrows the time of the nearest earlier event in its sequence that has one (or, if none, the
 //! nearest later one) and sorts right next to it, marked as borrowed.
 
+use crate::names::{NameError, check_name};
 use crate::time::{Time, TimeKey};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt;
 
 /// A namespaced time meaning: lowercase dotted segments of `a-z`, `0-9` and `_`, at least two,
 /// such as `ntfs.si.modified`.
@@ -30,37 +30,6 @@ impl TimeMeaning {
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-/// A name that isn't a valid namespaced name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NameError(pub String);
-
-impl fmt::Display for NameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "`{}` is not a namespaced name (lowercase dotted segments, at least two)",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NameError {}
-
-fn check_name(name: &str) -> Result<(), NameError> {
-    let segments: Vec<&str> = name.split('.').collect();
-    let ok = segments.len() >= 2
-        && segments.iter().all(|s| {
-            !s.is_empty()
-                && s.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        });
-    if ok {
-        Ok(())
-    } else {
-        Err(NameError(name.to_string()))
     }
 }
 

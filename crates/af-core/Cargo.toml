@@ -9,3 +9,6 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+uuid = { version = "1.29.0", features = ["v4"] }
