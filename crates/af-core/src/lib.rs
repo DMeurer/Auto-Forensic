@@ -9,6 +9,7 @@ pub mod concepts;
 pub mod ids;
 pub mod names;
 pub mod path;
+pub mod plugin;
 pub mod profile;
 pub mod system;
 pub mod time;
