@@ -13,6 +13,7 @@ pub mod profile;
 pub mod system;
 pub mod time;
 pub mod timeline;
+pub mod unit;
 
 /// The workspace version, shared by all crates.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
