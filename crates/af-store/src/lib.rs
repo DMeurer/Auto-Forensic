@@ -163,6 +163,47 @@ impl Store {
         tx.commit()
     }
 
+    /// Loads spool files (stores written by plugins during a run, each opened with
+    /// [`Store::open`] on its own temporary path) into this store. Events go in sorted by time
+    /// (no time last), then ID; records, entities and links as they are. Returns the number of
+    /// events loaded. Chosen over a Parquet spool by benchmark (F17, 50M rows): faster in both
+    /// phases, less RAM and disk, and 128-bit IDs survive.
+    pub fn load_spools(&mut self, spools: &[&Path]) -> Result<u64, Error> {
+        if spools.is_empty() {
+            return Ok(0);
+        }
+        for (i, p) in spools.iter().enumerate() {
+            let path = p.to_string_lossy().replace('\'', "''");
+            self.conn
+                .execute_batch(&format!("ATTACH '{path}' AS spool{i} (READ_ONLY);"))?;
+        }
+        let union = |table: &str| {
+            (0..spools.len())
+                .map(|i| format!("SELECT * FROM spool{i}.{table}"))
+                .collect::<Vec<_>>()
+                .join(" UNION ALL ")
+        };
+        let result = (|| {
+            let tx = self.conn.transaction()?;
+            for table in ["records", "entities", "links"] {
+                tx.execute_batch(&format!("INSERT INTO {table} {};", union(table)))?;
+            }
+            let n = tx.execute(
+                &format!(
+                    "INSERT INTO events SELECT * FROM ({}) ORDER BY ts NULLS LAST, id",
+                    union("events")
+                ),
+                [],
+            )?;
+            tx.commit()?;
+            Ok(n as u64)
+        })();
+        for i in 0..spools.len() {
+            self.conn.execute_batch(&format!("DETACH spool{i};"))?;
+        }
+        result
+    }
+
     /// All events, ordered by ID.
     pub fn events(&self) -> Result<Vec<EventRow>, Error> {
         let mut stmt = self.conn.prepare(
@@ -256,6 +297,108 @@ mod tests {
         for (row, t) in back.iter().zip(&times) {
             assert_eq!(&Time::from_columns(&row.time).unwrap(), t);
         }
+    }
+
+    fn event(id: u128, ts: Option<i64>) -> EventRow {
+        let time = match ts {
+            Some(t) => Time::from_ticks_1601(t as u64),
+            None => Time::from_ticks_1601(0),
+        };
+        EventRow {
+            id,
+            record: id,
+            system: 1,
+            kind: "test.event".into(),
+            meaning: "test.written".into(),
+            time: time.to_columns(),
+            clock_domain: "wall".into(),
+            seq_domain: None,
+            seq_no: None,
+            created_by: "test.plugin".into(),
+        }
+    }
+
+    /// Whether the events table is stored in time order: `rowid` is the physical position.
+    fn physically_sorted(store: &Store) -> bool {
+        let back: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM (SELECT ts < lag(ts) OVER (ORDER BY rowid) AS back \
+                 FROM events WHERE ts IS NOT NULL) WHERE back",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        back == 0
+    }
+
+    #[test]
+    fn spools_load_sorted_by_time() {
+        let dir = std::env::temp_dir().join(format!("af-spool-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("spool-a.duckdb"), dir.join("spool-b.duckdb"));
+        // Two writers, each out of order, one with an event without time. u128 IDs above 2^64.
+        let big = 1u128 << 100;
+        Store::open(&a, 256)
+            .unwrap()
+            .insert_events(&[
+                event(big + 3, Some(300)),
+                event(big + 1, Some(100)),
+                event(big + 9, None),
+            ])
+            .unwrap();
+        Store::open(&b, 256)
+            .unwrap()
+            .insert_events(&[event(big + 2, Some(200)), event(big + 4, Some(50))])
+            .unwrap();
+        let mut project = Store::in_memory(256).unwrap();
+        assert_eq!(project.load_spools(&[&a, &b]).unwrap(), 5);
+        let ids: Vec<u128> = project
+            .connection()
+            .prepare("SELECT id FROM events ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ids, [big + 4, big + 1, big + 2, big + 3, big + 9]);
+        assert!(physically_sorted(&project));
+        // Spools are detached again, so their files can be deleted.
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// F17's "done when": 100M synthetic rows load at the memory limit. About 15 GB of disk at
+    /// peak and a few minutes; run by hand with `cargo test -p af-store --release -- --ignored`.
+    #[test]
+    #[ignore]
+    fn load_100m_rows_at_the_memory_limit() {
+        let dir = std::env::temp_dir().join(format!("af-spool-100m-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spools: Vec<_> = (0..4)
+            .map(|w| dir.join(format!("spool-{w}.duckdb")))
+            .collect();
+        for (w, p) in spools.iter().enumerate() {
+            // Generated in SQL: the appender's speed isn't what this test measures.
+            Store::open(p, 1024)
+                .unwrap()
+                .connection()
+                .execute_batch(&format!(
+                    "INSERT INTO events SELECT ({w}::UHUGEINT << 64) + i::UHUGEINT, i // 8, {w}, \
+                     'bench.event', 'bench.written', \
+                     (130000000000000000 + hash(i, {w}) % 40000000000000000)::BIGINT AS t, t, t, t, \
+                     NULL, 'ticks_1601', 'ok', 1, 'utc', NULL, 1, 'wall', NULL, NULL, 'bench' \
+                     FROM range(25000000) r(i);"
+                ))
+                .unwrap();
+        }
+        let start = std::time::Instant::now();
+        let mut project = Store::open(&dir.join("project.duckdb"), 5120).unwrap();
+        let refs: Vec<&Path> = spools.iter().map(|p| p.as_path()).collect();
+        assert_eq!(project.load_spools(&refs).unwrap(), 100_000_000);
+        eprintln!("loaded 100M in {:?}", start.elapsed());
+        assert!(physically_sorted(&project));
+        drop(project);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
