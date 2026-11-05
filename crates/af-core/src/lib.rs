@@ -11,6 +11,7 @@ pub mod names;
 pub mod path;
 pub mod plugin;
 pub mod profile;
+pub mod runner;
 pub mod system;
 pub mod time;
 pub mod timeline;
