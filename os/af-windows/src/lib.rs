@@ -1,1 +1,26 @@
-//! Windows OS profile (piece F10 adds the stub profile).
+//! Windows OS profile and Windows artifact plugins (piece F10 adds the stub profile).
+//!
+//! Windows names live here, not in core. Core's time encodings have neutral names; the Windows
+//! ones map onto them:
+//!
+//! | Windows name | Core encoding |
+//! |---|---|
+//! | `FILETIME` (NTFS, registry, EVTX, Prefetch) | [`af_core::time::encoding::TICKS_1601`] |
+//! | FAT date and time words | [`af_core::time::encoding::DOS_LOCAL`], `DOS_LOCAL_10MS`, `DOS_LOCAL_DATE` |
+
+#[cfg(test)]
+mod tests {
+    use af_core::time::{Time, TimeStatus, encoding};
+
+    /// F4's "done when", in Windows words: FILETIME 0 and the largest FILETIME round-trip.
+    #[test]
+    fn filetime_zero_and_far_future_round_trip() {
+        for filetime in [0u64, i64::MAX as u64, u64::MAX] {
+            let t = Time::from_ticks_1601(filetime);
+            assert_eq!(t.raw.encoding, encoding::TICKS_1601);
+            assert_eq!(Time::from_raw(&t.raw), Some(t.clone()));
+            assert_eq!(Time::from_columns(&t.to_columns()), Ok(t.clone()));
+        }
+        assert_eq!(Time::from_ticks_1601(0).status, TimeStatus::NotSet);
+    }
+}
