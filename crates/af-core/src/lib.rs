@@ -4,6 +4,7 @@
 //! format parsers live in `os/` and `formats/`, and `cargo xtask check` enforces that.
 
 pub mod time;
+pub mod timeline;
 
 /// The workspace version, shared by all crates.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

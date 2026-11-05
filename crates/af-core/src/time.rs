@@ -9,6 +9,9 @@
 //! - **raw value and encoding**: the bit pattern as stored in the evidence, and what it means, so
 //!   the key can always be derived again ([`Time::from_raw`]).
 //! - **status**: `ok`, `not_set`, `out_of_range`, `year_inferred`, `estimated` or `absent`.
+//! - **precision, zone and conversion version** (F5): the step of the stored value (a date-only
+//!   value has a precision of one day and is never shown as midnight), whether it is UTC or local
+//!   and with which offset, and which version of the conversion derived key, min and max.
 //!
 //! Nothing is ever clamped or rejected. A value that can't become a key keeps its raw value
 //! and gets a status, because odd values are evidence too.
@@ -26,6 +29,9 @@ pub const TICKS_PER_DAY: i64 = 86_400 * TICKS_PER_SECOND;
 pub const UNIX_EPOCH_KEY: i64 = 116_444_736_000_000_000;
 /// Days from 1601-01-01 to 1970-01-01.
 const DAYS_1601_TO_1970: i64 = 134_774;
+/// Version of the conversions in this module. Raise it when a conversion changes, so stored
+/// times with an older version can be derived again from their raw values.
+pub const CONVERSION_VERSION: u16 = 1;
 /// The widest offsets from UTC in use: local time lies between UTC-12 and UTC+14.
 const MOST_WEST: i64 = 12 * 3600 * TICKS_PER_SECOND;
 const MOST_EAST: i64 = 14 * 3600 * TICKS_PER_SECOND;
@@ -158,6 +164,96 @@ impl TimeStatus {
     }
 }
 
+/// The step of a stored value, in ticks: 1 for 100 ns, a second for whole seconds, a day for a
+/// date-only value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Precision(pub i64);
+
+impl Precision {
+    pub const TICK: Self = Self(1);
+    pub const TEN_MS: Self = Self(TICKS_PER_SECOND / 100);
+    pub const SECOND: Self = Self(TICKS_PER_SECOND);
+    pub const TWO_SECONDS: Self = Self(2 * TICKS_PER_SECOND);
+    pub const DAY: Self = Self(TICKS_PER_DAY);
+
+    /// Whether the value is a date without a time of day.
+    pub fn is_date(self) -> bool {
+        self.0 >= TICKS_PER_DAY
+    }
+
+    /// Digits after the seconds worth showing, 0 to 7.
+    fn fraction_digits(self) -> usize {
+        let mut digits = 7;
+        let mut step = self.0.max(1);
+        while step >= 10 && digits > 0 {
+            step /= 10;
+            digits -= 1;
+        }
+        digits
+    }
+}
+
+/// Whether a time is UTC or local, and the offset from UTC where known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Zone {
+    /// Stored as UTC.
+    Utc,
+    /// Local time with a known offset, in minutes east of UTC (+60 for Berlin in winter).
+    KnownLocal { offset_min: i16 },
+    /// Local time with an assumed offset, for example the system's zone applied to a stick.
+    AssumedLocal { offset_min: i16 },
+    /// Local time in an unknown zone. The key reads the clock as UTC.
+    Unknown,
+    /// Zones don't apply, for example to a monotonic clock.
+    NotApplicable,
+}
+
+impl Zone {
+    /// The stored status name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Utc => "utc",
+            Self::KnownLocal { .. } => "known_local",
+            Self::AssumedLocal { .. } => "assumed_local",
+            Self::Unknown => "unknown",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+
+    /// The offset in minutes, for local zones with an offset.
+    pub fn offset_min(self) -> Option<i16> {
+        match self {
+            Self::KnownLocal { offset_min } | Self::AssumedLocal { offset_min } => Some(offset_min),
+            _ => None,
+        }
+    }
+
+    /// From the stored status name and offset.
+    pub fn parse(status: &str, offset_min: Option<i16>) -> Option<Self> {
+        Some(match (status, offset_min) {
+            ("utc", None) => Self::Utc,
+            ("known_local", Some(o)) => Self::KnownLocal { offset_min: o },
+            ("assumed_local", Some(o)) => Self::AssumedLocal { offset_min: o },
+            ("unknown", None) => Self::Unknown,
+            ("not_applicable", None) => Self::NotApplicable,
+            _ => return None,
+        })
+    }
+
+    fn is_local(self) -> bool {
+        matches!(
+            self,
+            Self::KnownLocal { .. } | Self::AssumedLocal { .. } | Self::Unknown
+        )
+    }
+
+    /// Ticks to add to the key to get the local clock reading (0 for an unknown zone, whose key
+    /// already is the local reading).
+    fn local_shift(self) -> i64 {
+        i64::from(self.offset_min().unwrap_or(0)) * 60 * TICKS_PER_SECOND
+    }
+}
+
 /// A raw value as stored in the evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RawValue {
@@ -191,17 +287,38 @@ pub struct Time {
     pub max: Option<TimeKey>,
     pub raw: RawTime,
     pub status: TimeStatus,
+    pub precision: Precision,
+    pub zone: Zone,
+    /// The [`CONVERSION_VERSION`] that derived key, min and max from the raw value.
+    pub conversion: u16,
 }
 
 impl Time {
     /// A value without a key.
-    fn without_key(raw: RawTime, status: TimeStatus) -> Self {
+    fn without_key(raw: RawTime, status: TimeStatus, precision: Precision, zone: Zone) -> Self {
         Self {
             key: None,
             min: None,
             max: None,
             raw,
             status,
+            precision,
+            zone,
+            conversion: CONVERSION_VERSION,
+        }
+    }
+
+    /// A UTC value with key `k` and interval `[k, k + step - 1]`.
+    fn utc(k: i64, precision: Precision, raw: RawTime) -> Self {
+        Self {
+            key: Some(TimeKey(k)),
+            min: Some(TimeKey(k)),
+            max: k.checked_add(precision.0 - 1).map(TimeKey),
+            raw,
+            status: TimeStatus::Ok,
+            precision,
+            zone: Zone::Utc,
+            conversion: CONVERSION_VERSION,
         }
     }
 
@@ -209,16 +326,11 @@ impl Time {
     /// `i64::MAX` (year 30828) are out of range; both keep their raw value.
     pub fn from_ticks_1601(ticks: u64) -> Self {
         let raw = RawTime::int(encoding::TICKS_1601, ticks as i64);
+        let p = Precision::TICK;
         match i64::try_from(ticks) {
-            Ok(0) => Self::without_key(raw, TimeStatus::NotSet),
-            Ok(t) => Self {
-                key: Some(TimeKey(t)),
-                min: Some(TimeKey(t)),
-                max: Some(TimeKey(t)),
-                raw,
-                status: TimeStatus::Ok,
-            },
-            Err(_) => Self::without_key(raw, TimeStatus::OutOfRange),
+            Ok(0) => Self::without_key(raw, TimeStatus::NotSet, p, Zone::Utc),
+            Ok(t) => Self::utc(t, p, raw),
+            Err(_) => Self::without_key(raw, TimeStatus::OutOfRange, p, Zone::Utc),
         }
     }
 
@@ -229,14 +341,8 @@ impl Time {
             .checked_mul(TICKS_PER_SECOND)
             .and_then(|t| t.checked_add(UNIX_EPOCH_KEY));
         match key {
-            Some(k) => Self {
-                key: Some(TimeKey(k)),
-                min: Some(TimeKey(k)),
-                max: k.checked_add(TICKS_PER_SECOND - 1).map(TimeKey),
-                raw,
-                status: TimeStatus::Ok,
-            },
-            None => Self::without_key(raw, TimeStatus::OutOfRange),
+            Some(k) => Self::utc(k, Precision::SECOND, raw),
+            None => Self::without_key(raw, TimeStatus::OutOfRange, Precision::SECOND, Zone::Utc),
         }
     }
 
@@ -245,13 +351,7 @@ impl Time {
     pub fn from_unix_nanos(nanos: i64) -> Self {
         // Every i64 of nanoseconds fits: about 292 years either side of 1970.
         let k = UNIX_EPOCH_KEY + nanos.div_euclid(100);
-        Self {
-            key: Some(TimeKey(k)),
-            min: Some(TimeKey(k)),
-            max: Some(TimeKey(k)),
-            raw: RawTime::int(encoding::UNIX_NS, nanos),
-            status: TimeStatus::Ok,
-        }
+        Self::utc(k, Precision::TICK, RawTime::int(encoding::UNIX_NS, nanos))
     }
 
     /// From DOS date and time words (local time, no zone, 2-second steps), with the optional
@@ -267,18 +367,18 @@ impl Time {
                     encoding::DOS_LOCAL,
                     (i64::from(date) << 16) | i64::from(time),
                 ),
-                2 * TICKS_PER_SECOND,
+                Precision::TWO_SECONDS,
             ),
             Some(c) => (
                 RawTime::int(
                     encoding::DOS_LOCAL_10MS,
                     (i64::from(date) << 24) | (i64::from(time) << 8) | i64::from(c),
                 ),
-                TICKS_PER_SECOND / 100,
+                Precision::TEN_MS,
             ),
         };
         if date == 0 {
-            return Self::without_key(raw, TimeStatus::NotSet);
+            return Self::without_key(raw, TimeStatus::NotSet, step, Zone::Unknown);
         }
         let (year, month, day) = dos_date_fields(date);
         let (hour, minute, second) = (
@@ -287,13 +387,15 @@ impl Time {
             u32::from(time & 0x1f) * 2,
         );
         let extra = match count_10ms {
-            Some(c) if c > 199 => return Self::without_key(raw, TimeStatus::OutOfRange),
+            Some(c) if c > 199 => {
+                return Self::without_key(raw, TimeStatus::OutOfRange, step, Zone::Unknown);
+            }
             Some(c) => i64::from(c) * (TICKS_PER_SECOND / 100),
             None => 0,
         };
         match TimeKey::from_utc(year, month, day, hour, minute, second) {
             Some(TimeKey(k)) => Self::local_unknown_zone(k + extra, step, raw),
-            None => Self::without_key(raw, TimeStatus::OutOfRange),
+            None => Self::without_key(raw, TimeStatus::OutOfRange, step, Zone::Unknown),
         }
     }
 
@@ -301,25 +403,123 @@ impl Time {
     /// is local midnight read as UTC, and the interval spans the whole day in every zone.
     pub fn from_dos_local_date(date: u16) -> Self {
         let raw = RawTime::int(encoding::DOS_LOCAL_DATE, i64::from(date));
+        let p = Precision::DAY;
         if date == 0 {
-            return Self::without_key(raw, TimeStatus::NotSet);
+            return Self::without_key(raw, TimeStatus::NotSet, p, Zone::Unknown);
         }
         let (year, month, day) = dos_date_fields(date);
         match TimeKey::from_utc(year, month, day, 0, 0, 0) {
-            Some(TimeKey(k)) => Self::local_unknown_zone(k, TICKS_PER_DAY, raw),
-            None => Self::without_key(raw, TimeStatus::OutOfRange),
+            Some(TimeKey(k)) => Self::local_unknown_zone(k, p, raw),
+            None => Self::without_key(raw, TimeStatus::OutOfRange, p, Zone::Unknown),
         }
     }
 
     /// A local reading `k` (taken as UTC) with a step of `step` ticks, in an unknown zone.
-    fn local_unknown_zone(k: i64, step: i64, raw: RawTime) -> Self {
+    fn local_unknown_zone(k: i64, step: Precision, raw: RawTime) -> Self {
         Self {
             key: Some(TimeKey(k)),
             min: Some(TimeKey(k - MOST_EAST)),
-            max: Some(TimeKey(k + step - 1 + MOST_WEST)),
+            max: Some(TimeKey(k + step.0 - 1 + MOST_WEST)),
             raw,
             status: TimeStatus::Ok,
+            precision: step,
+            zone: Zone::Unknown,
+            conversion: CONVERSION_VERSION,
         }
+    }
+
+    /// The same local time with its UTC offset now known (or assumed), in minutes east of UTC.
+    /// The key becomes the true UTC time and the interval shrinks to the value's own step.
+    /// UTC times, times without a key and times where zones don't apply come back unchanged.
+    pub fn with_local_offset(&self, offset_min: i16, assumed: bool) -> Self {
+        let mut t = self.clone();
+        let Some(TimeKey(k)) = self.key else {
+            return t;
+        };
+        if !self.zone.is_local() {
+            return t;
+        }
+        let local = k + self.zone.local_shift();
+        let utc = local - i64::from(offset_min) * 60 * TICKS_PER_SECOND;
+        t.key = Some(TimeKey(utc));
+        t.min = Some(TimeKey(utc));
+        t.max = Some(TimeKey(utc + self.precision.0 - 1));
+        t.zone = if assumed {
+            Zone::AssumedLocal { offset_min }
+        } else {
+            Zone::KnownLocal { offset_min }
+        };
+        t
+    }
+
+    /// Derives this time again from its raw value with the current conversions, keeping its
+    /// known or assumed zone. `None` for encodings core doesn't know.
+    pub fn rederive(&self) -> Option<Self> {
+        let fresh = Self::from_raw(&self.raw)?;
+        Some(match self.zone {
+            Zone::KnownLocal { offset_min } => fresh.with_local_offset(offset_min, false),
+            Zone::AssumedLocal { offset_min } => fresh.with_local_offset(offset_min, true),
+            _ => fresh,
+        })
+    }
+
+    /// The time as text for people. A date-only value shows as a date, never as midnight. A
+    /// local time in an unknown zone says so. A time without a key shows its status and raw value.
+    pub fn display(&self) -> String {
+        let Some(TimeKey(k)) = self.key else {
+            let raw = match &self.raw.value {
+                RawValue::Int(v) => v.to_string(),
+                RawValue::Text(s) => format!("{s:?}"),
+            };
+            return format!(
+                "no time ({}), raw {raw} as {}",
+                self.status.as_str(),
+                self.raw.encoding
+            );
+        };
+        let zone_note = |local_only: bool| match self.zone {
+            Zone::Utc => "UTC".to_string(),
+            Zone::Unknown => "local, zone unknown".to_string(),
+            Zone::KnownLocal { offset_min } if local_only => {
+                format!("local {}", offset(offset_min))
+            }
+            Zone::AssumedLocal { offset_min } if local_only => {
+                format!("local {} assumed", offset(offset_min))
+            }
+            Zone::KnownLocal { offset_min } => format!("UTC, local {}", offset(offset_min)),
+            Zone::AssumedLocal { offset_min } => {
+                format!("UTC, local {} assumed", offset(offset_min))
+            }
+            Zone::NotApplicable => "no zone".to_string(),
+        };
+        let mut text = if self.precision.is_date() {
+            // The date as written in the evidence: the local date for a local value.
+            let p = TimeKey(k + self.zone.local_shift()).to_utc();
+            format!(
+                "{:04}-{:02}-{:02} (date, {})",
+                p.year,
+                p.month,
+                p.day,
+                zone_note(true)
+            )
+        } else {
+            let p = TimeKey(k).to_utc();
+            let mut s = format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                p.year, p.month, p.day, p.hour, p.minute, p.second
+            );
+            let digits = self.precision.fraction_digits();
+            if digits > 0 {
+                let frac = format!("{:07}", p.ticks);
+                s.push('.');
+                s.push_str(&frac[..digits]);
+            }
+            format!("{s} {}", zone_note(false))
+        };
+        if self.status != TimeStatus::Ok {
+            text.push_str(&format!(" [{}]", self.status.as_str()));
+        }
+        text
     }
 
     /// Derives the time again from its raw value, for the encodings core knows. Returns `None` for
@@ -360,6 +560,10 @@ impl Time {
             raw_text,
             raw_encoding: self.raw.encoding.clone(),
             time_status: self.status.as_str().to_string(),
+            precision_ticks: self.precision.0,
+            tz_status: self.zone.as_str().to_string(),
+            tz_offset_min: self.zone.offset_min(),
+            conversion_version: self.conversion,
         }
     }
 
@@ -372,6 +576,8 @@ impl Time {
         };
         let status = TimeStatus::parse(&c.time_status)
             .ok_or_else(|| ColumnError::Status(c.time_status.clone()))?;
+        let zone = Zone::parse(&c.tz_status, c.tz_offset_min)
+            .ok_or_else(|| ColumnError::Zone(c.tz_status.clone()))?;
         Ok(Self {
             key: c.ts.map(TimeKey),
             min: c.ts_min.map(TimeKey),
@@ -381,6 +587,9 @@ impl Time {
                 value,
             },
             status,
+            precision: Precision(c.precision_ticks),
+            zone,
+            conversion: c.conversion_version,
         })
     }
 }
@@ -395,6 +604,11 @@ pub struct TimeColumns {
     pub raw_text: Option<String>,
     pub raw_encoding: String,
     pub time_status: String,
+    pub precision_ticks: i64,
+    pub tz_status: String,
+    /// Set only for `known_local` and `assumed_local`.
+    pub tz_offset_min: Option<i16>,
+    pub conversion_version: u16,
 }
 
 /// Stored time columns that can't be read back.
@@ -404,6 +618,8 @@ pub enum ColumnError {
     Raw,
     /// Unknown status name.
     Status(String),
+    /// Unknown zone status, or an offset where none belongs (or none where one does).
+    Zone(String),
 }
 
 impl fmt::Display for ColumnError {
@@ -411,6 +627,7 @@ impl fmt::Display for ColumnError {
         match self {
             Self::Raw => write!(f, "exactly one of raw_i64 and raw_text must be set"),
             Self::Status(s) => write!(f, "unknown time status `{s}`"),
+            Self::Zone(s) => write!(f, "zone status `{s}` doesn't match its offset"),
         }
     }
 }
@@ -423,6 +640,13 @@ fn dos_date_fields(date: u16) -> (i64, u32, u32) {
         u32::from((date >> 5) & 0x0f),
         u32::from(date & 0x1f),
     )
+}
+
+/// An offset as `UTC+02:00` or `UTC-05:30`.
+fn offset(min: i16) -> String {
+    let sign = if min < 0 { '-' } else { '+' };
+    let m = i32::from(min).abs();
+    format!("UTC{sign}{:02}:{:02}", m / 60, m % 60)
 }
 
 fn is_leap(y: i64) -> bool {
@@ -474,7 +698,11 @@ mod tests {
     fn round_trips(t: &Time) {
         let back = Time::from_columns(&t.to_columns()).expect("columns read back");
         assert_eq!(&back, t, "columns");
-        assert_eq!(Time::from_raw(&t.raw).as_ref(), Some(t), "from raw");
+        if t.zone.offset_min().is_none() {
+            // A zone set later isn't in the raw value; `rederive` below keeps it.
+            assert_eq!(Time::from_raw(&t.raw).as_ref(), Some(t), "from raw");
+        }
+        assert_eq!(t.rederive().as_ref(), Some(t), "rederive");
     }
 
     fn utc(t: &Time) -> String {
@@ -620,6 +848,9 @@ mod tests {
                 value: RawValue::Text("Nov  5 14:30:20".into()),
             },
             status: TimeStatus::YearInferred,
+            precision: Precision::SECOND,
+            zone: Zone::Unknown,
+            conversion: CONVERSION_VERSION,
         };
         assert_eq!(Time::from_columns(&t.to_columns()), Ok(t.clone()));
         assert_eq!(Time::from_raw(&t.raw), None);
@@ -663,5 +894,95 @@ mod tests {
         let k = TimeKey::from_utc(1500, 3, 1, 0, 0, 0).unwrap();
         assert!(k.0 < 0);
         assert_eq!(k.to_utc().to_string(), "1500-03-01 00:00:00.0000000");
+    }
+
+    #[test]
+    fn date_only_is_shown_as_a_date_never_as_midnight() {
+        let t = Time::from_dos_local_date(dos_date(2026, 4, 26));
+        assert!(t.precision.is_date());
+        assert_eq!(t.display(), "2026-04-26 (date, local, zone unknown)");
+        // With the zone known (Berlin, summer: UTC+2) the key is midnight Berlin in UTC, and the
+        // shown date stays the local date, not 2026-04-25 22:00.
+        let b = t.with_local_offset(120, false);
+        assert_eq!(
+            b.key.unwrap().to_utc().to_string(),
+            "2026-04-25 22:00:00.0000000"
+        );
+        assert_eq!(b.display(), "2026-04-26 (date, local UTC+02:00)");
+        for d in [t.display(), b.display()] {
+            assert!(!d.contains("00:00") && !d.contains("22:00"), "{d}");
+        }
+        round_trips(&b);
+    }
+
+    #[test]
+    fn known_offset_narrows_the_interval() {
+        let t = Time::from_dos_local(dos_date(2026, 11, 5), dos_time(14, 30, 20), None);
+        assert_eq!(t.display(), "2026-11-05 14:30:20 local, zone unknown");
+        let b = t.with_local_offset(60, false);
+        assert_eq!(b.display(), "2026-11-05 13:30:20 UTC, local UTC+01:00");
+        assert_eq!(b.min, b.key);
+        assert_eq!(
+            b.max,
+            Some(TimeKey(b.key.unwrap().0 + 2 * TICKS_PER_SECOND - 1))
+        );
+        round_trips(&b);
+        // Changing an assumed offset starts from the local reading, not from the shifted key.
+        let a = t.with_local_offset(-300, true).with_local_offset(60, false);
+        assert_eq!(a, b);
+        assert_eq!(
+            t.with_local_offset(-330, true).display(),
+            "2026-11-05 20:00:20 UTC, local UTC-05:30 assumed"
+        );
+        // A UTC value ignores offsets.
+        let u = Time::from_unix_seconds(0);
+        assert_eq!(u.with_local_offset(60, false), u);
+    }
+
+    #[test]
+    fn display_follows_precision_and_status() {
+        assert_eq!(
+            Time::from_ticks_1601(134_064_720_001_234_567).display(),
+            "2025-11-01 12:00:00.1234567 UTC"
+        );
+        assert_eq!(
+            Time::from_unix_seconds(0).display(),
+            "1970-01-01 00:00:00 UTC"
+        );
+        assert_eq!(
+            Time::from_dos_local(dos_date(2026, 11, 5), dos_time(14, 30, 20), Some(155)).display(),
+            "2026-11-05 14:30:21.55 local, zone unknown"
+        );
+        assert_eq!(
+            Time::from_ticks_1601(0).display(),
+            "no time (not_set), raw 0 as ticks_1601"
+        );
+        let mut e = Time::from_unix_seconds(60);
+        e.status = TimeStatus::Estimated;
+        assert_eq!(e.display(), "1970-01-01 00:01:00 UTC [estimated]");
+    }
+
+    #[test]
+    fn zone_columns_must_match() {
+        let mut c = Time::from_unix_seconds(5).to_columns();
+        c.tz_offset_min = Some(60);
+        assert_eq!(Time::from_columns(&c), Err(ColumnError::Zone("utc".into())));
+        let mut c = Time::from_unix_seconds(5).to_columns();
+        c.tz_status = "known_local".into();
+        assert_eq!(
+            Time::from_columns(&c),
+            Err(ColumnError::Zone("known_local".into()))
+        );
+    }
+
+    #[test]
+    fn conversion_version_is_stored() {
+        let t = Time::from_unix_seconds(5);
+        assert_eq!(t.conversion, CONVERSION_VERSION);
+        let mut c = t.to_columns();
+        c.conversion_version = 0;
+        let old = Time::from_columns(&c).unwrap();
+        // An old version is derived again from the raw value, which gives the current one.
+        assert_eq!(old.rederive(), Some(t));
     }
 }
