@@ -1,4 +1,4 @@
-//! Windows OS profile and Windows artifact plugins (piece F10 adds the stub profile).
+//! Windows OS profile and Windows artifact plugins.
 //!
 //! Windows names live here, not in core. Core's time encodings have neutral names; the Windows
 //! ones map onto them:
@@ -7,6 +7,10 @@
 //! |---|---|
 //! | `FILETIME` (NTFS, registry, EVTX, Prefetch) | [`af_core::time::encoding::TICKS_1601`] |
 //! | FAT date and time words | [`af_core::time::encoding::DOS_LOCAL`], `DOS_LOCAL_10MS`, `DOS_LOCAL_DATE` |
+
+pub mod profile;
+
+pub use profile::WindowsProfile;
 
 #[cfg(test)]
 mod tests {

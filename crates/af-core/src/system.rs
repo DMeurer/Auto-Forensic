@@ -12,7 +12,7 @@
 //! form one more system with family `none`. The result never depends on detector order.
 
 use crate::ids::SystemId;
-use crate::path::{PathStyle, ViewPath};
+use crate::path::{CasePolicy, Name, NameKind, PathStyle, ViewPath};
 use std::collections::BTreeSet;
 
 /// The operating system family of a system.
@@ -51,6 +51,13 @@ pub struct VolumeId(pub u128);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ViewId(pub u128);
 
+impl ViewId {
+    /// A new random ID (UUID version 4).
+    pub fn new_random() -> Self {
+        Self(uuid::Uuid::new_v4().as_u128())
+    }
+}
+
 /// A way of seeing a system's files. The OS profile builds it (piece F10), for example a Windows
 /// view that maps drive letters to volumes and ignores case.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +65,15 @@ pub struct View {
     pub id: ViewId,
     pub system: SystemId,
     pub style: PathStyle,
-    pub volumes: Vec<VolumeId>,
+    pub mounts: Vec<Mount>,
+}
+
+/// Where a volume appears in a view. The point is the profile's business: a drive letter on
+/// Windows, a mount path on Linux, a volume label on a stick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mount {
+    pub point: String,
+    pub volume: VolumeId,
 }
 
 /// A system in a project.
@@ -80,6 +95,74 @@ pub trait VolumeProbe {
     fn id(&self) -> VolumeId;
     /// Whether a file or folder exists, by the volume's own case rules.
     fn exists(&self, path: &ViewPath) -> bool;
+    /// The volume label, if the file system has one.
+    fn label(&self) -> Option<String> {
+        None
+    }
+    /// How the volume's file system compares names (FAT and NTFS ignore case, ext4 doesn't).
+    fn case(&self) -> CasePolicy {
+        CasePolicy::Exact
+    }
+}
+
+/// An in-memory volume that only knows which paths exist, for tests and fixtures. Paths are
+/// written with `/` between names.
+#[derive(Debug, Clone)]
+pub struct MemVolume {
+    pub id: VolumeId,
+    pub paths: Vec<String>,
+    pub label: Option<String>,
+    pub case: CasePolicy,
+}
+
+impl MemVolume {
+    /// A case-insensitive volume (like FAT or NTFS) with the given paths.
+    pub fn new(id: u128, paths: &[&str]) -> Self {
+        Self {
+            id: VolumeId(id),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            label: None,
+            case: CasePolicy::Insensitive,
+        }
+    }
+
+    pub fn with_label(mut self, label: &str) -> Self {
+        self.label = Some(label.to_string());
+        self
+    }
+
+    pub fn with_case(mut self, case: CasePolicy) -> Self {
+        self.case = case;
+        self
+    }
+
+    /// A path from text with `/` between names.
+    pub fn path(text: &str) -> ViewPath {
+        ViewPath::new(
+            text.split('/')
+                .filter(|n| !n.is_empty())
+                .map(|n| Name::from_text(n, NameKind::Utf16))
+                .collect(),
+        )
+    }
+}
+
+impl VolumeProbe for MemVolume {
+    fn id(&self) -> VolumeId {
+        self.id
+    }
+    fn exists(&self, path: &ViewPath) -> bool {
+        let want = path.key(self.case);
+        self.paths
+            .iter()
+            .any(|p| Self::path(p).key(self.case) == want)
+    }
+    fn label(&self) -> Option<String> {
+        self.label.clone()
+    }
+    fn case(&self) -> CasePolicy {
+        self.case
+    }
 }
 
 /// One system found by a detector.
@@ -163,40 +246,8 @@ pub fn to_systems(detected: &[Detected], mut new_id: impl FnMut() -> SystemId) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::{CasePolicy, Name, NameKind};
-    use std::collections::HashSet;
-
-    /// A volume that only knows which paths exist.
-    struct MemVolume {
-        id: VolumeId,
-        paths: HashSet<String>,
-    }
-
-    impl MemVolume {
-        fn new(id: u128, paths: &[&str]) -> Self {
-            Self {
-                id: VolumeId(id),
-                paths: paths.iter().map(|p| p.to_ascii_lowercase()).collect(),
-            }
-        }
-    }
-
-    impl VolumeProbe for MemVolume {
-        fn id(&self) -> VolumeId {
-            self.id
-        }
-        fn exists(&self, path: &ViewPath) -> bool {
-            self.paths
-                .contains(&path.key(CasePolicy::Exact).to_ascii_lowercase())
-        }
-    }
-
     fn p(text: &str) -> ViewPath {
-        ViewPath::new(
-            text.split('/')
-                .map(|n| Name::from_text(n, NameKind::Utf16))
-                .collect(),
-        )
+        MemVolume::path(text)
     }
 
     /// Finds a system by one marker file, like the real profiles will (F10).
@@ -245,7 +296,7 @@ mod tests {
     #[test]
     fn dual_boot_gives_two_systems() {
         let win = MemVolume::new(1, &["Windows/System32/config/SYSTEM", "Users"]);
-        let lin = MemVolume::new(2, &["etc/os-release", "home"]);
+        let lin = MemVolume::new(2, &["etc/os-release", "home"]).with_case(CasePolicy::Exact);
         let vols: [&dyn VolumeProbe; 2] = [&win, &lin];
         let found = detect_systems(&vols, &[&windows(), &linux()]);
         assert_eq!(families(&found), [("windows", vec![1]), ("linux", vec![2])]);
