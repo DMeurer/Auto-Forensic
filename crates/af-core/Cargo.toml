@@ -1,0 +1,11 @@
+[package]
+name = "af-core"
+description = "Project model, time and path types, systems and the plugin interface. No OS or format code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

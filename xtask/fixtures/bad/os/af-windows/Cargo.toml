@@ -1,0 +1,8 @@
+[package]
+name = "af-windows"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+af-core = { path = "../../crates/af-core" }

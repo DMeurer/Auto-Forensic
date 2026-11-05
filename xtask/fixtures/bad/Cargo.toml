@@ -1,0 +1,9 @@
+# A test workspace for `cargo xtask check`. It breaks every rule once on purpose.
+[workspace]
+resolver = "3"
+members = ["crates/*", "formats/*", "os/*", "vendor/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+publish = false

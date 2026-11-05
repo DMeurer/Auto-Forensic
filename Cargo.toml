@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+# The folder a crate sits in decides which layer rules apply to it (see README.md and `cargo xtask check`).
+members = ["crates/*", "formats/*", "os/*", "xtask"]
+exclude = ["xtask/fixtures"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+af-core = { path = "crates/af-core" }
+af-host = { path = "crates/af-host" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+print_stdout = "warn"

@@ -1,0 +1,9 @@
+[package]
+name = "af-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+af-fmt-demo = { path = "../../formats/af-fmt-demo" }
+evtx = { path = "../../vendor/evtx" }
