@@ -1,0 +1,16 @@
+[package]
+name = "af-store"
+description = "The project store: DuckDB tables for records, events, entities and links."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+af-core.workspace = true
+# The version tested in stage 1 (T1). `bundled` compiles DuckDB itself, so users install nothing.
+duckdb = { version = "=1.20000.1", default-features = false, features = ["bundled"] }
+
+[lints]
+workspace = true

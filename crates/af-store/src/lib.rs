@@ -1,0 +1,303 @@
+//! The project store (piece F16): one DuckDB file per project.
+//!
+//! Tables:
+//! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
+//!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
+//! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
+//!   [`TimeColumns`], never DuckDB timestamp types, so nothing is clamped or converted.
+//! - `entities`: users, devices, interfaces and other things events refer to.
+//! - `links`: directed links between endpoints, in the stored form of [`Endpoint`].
+//!
+//! Every row records who made it (`created_by`: a plugin ID or `user`). No primary keys or
+//! indexes: they slow bulk loads, and F17 loads events sorted by time instead.
+//!
+//! [`Endpoint`]: af_core::ids::Endpoint
+
+use af_core::time::TimeColumns;
+use duckdb::{Connection, params};
+use std::path::Path;
+
+pub use duckdb::Error;
+
+/// The tables. `attrs` is VARCHAR holding JSON text.
+// shortcut: JSON as VARCHAR, not the JSON type, so the json extension isn't compiled in; switch when queries need json functions.
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS records (
+    id UHUGEINT NOT NULL,
+    system UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    locator VARCHAR NOT NULL,
+    byte_offset UBIGINT,
+    path_display VARCHAR,
+    path_key VARCHAR,
+    file_scheme VARCHAR,
+    file_value BLOB,
+    user_scheme VARCHAR,
+    user_value VARCHAR,
+    attrs VARCHAR,
+    created_by VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+    id UHUGEINT NOT NULL,
+    record UHUGEINT NOT NULL,
+    system UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    meaning VARCHAR NOT NULL,
+    ts BIGINT,
+    ts_min BIGINT,
+    ts_max BIGINT,
+    raw_i64 BIGINT,
+    raw_text VARCHAR,
+    raw_encoding VARCHAR NOT NULL,
+    time_status VARCHAR NOT NULL,
+    precision_ticks BIGINT NOT NULL,
+    tz_status VARCHAR NOT NULL,
+    tz_offset_min SMALLINT,
+    conversion_version USMALLINT NOT NULL,
+    clock_domain VARCHAR NOT NULL,
+    seq_domain VARCHAR,
+    seq_no BIGINT,
+    created_by VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS entities (
+    id UHUGEINT NOT NULL,
+    system UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    key VARCHAR NOT NULL,
+    attrs VARCHAR,
+    created_by VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS links (
+    id UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    from_kind VARCHAR NOT NULL,
+    from_id UHUGEINT,
+    from_system UHUGEINT,
+    from_file_scheme VARCHAR,
+    from_file_value BLOB,
+    to_kind VARCHAR NOT NULL,
+    to_id UHUGEINT,
+    to_system UHUGEINT,
+    to_file_scheme VARCHAR,
+    to_file_value BLOB,
+    created_by VARCHAR NOT NULL
+);
+";
+
+/// An open project store.
+pub struct Store {
+    conn: Connection,
+}
+
+/// One event row. The record and its attributes are stored separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventRow {
+    pub id: u128,
+    pub record: u128,
+    pub system: u128,
+    pub kind: String,
+    pub meaning: String,
+    pub time: TimeColumns,
+    pub clock_domain: String,
+    pub seq_domain: Option<String>,
+    pub seq_no: Option<i64>,
+    pub created_by: String,
+}
+
+impl Store {
+    /// Opens or creates the store at `path` with the safe settings from stage 1: at most
+    /// `memory_limit_mb`, 4 threads, and no insertion-order guarantee (which bulk loads need).
+    pub fn open(path: &Path, memory_limit_mb: u32) -> Result<Self, Error> {
+        Self::setup(Connection::open(path)?, memory_limit_mb)
+    }
+
+    /// An in-memory store, for tests.
+    pub fn in_memory(memory_limit_mb: u32) -> Result<Self, Error> {
+        Self::setup(Connection::open_in_memory()?, memory_limit_mb)
+    }
+
+    fn setup(conn: Connection, memory_limit_mb: u32) -> Result<Self, Error> {
+        conn.execute_batch(&format!(
+            "SET memory_limit = '{memory_limit_mb}MB'; SET threads = 4; \
+             SET preserve_insertion_order = false;"
+        ))?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self { conn })
+    }
+
+    /// The underlying connection, for queries not wrapped here yet.
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
+    pub fn insert_events(&mut self, rows: &[EventRow]) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut app = tx.appender("events")?;
+            for r in rows {
+                let t = &r.time;
+                app.append_row(params![
+                    r.id,
+                    r.record,
+                    r.system,
+                    r.kind,
+                    r.meaning,
+                    t.ts,
+                    t.ts_min,
+                    t.ts_max,
+                    t.raw_i64,
+                    t.raw_text,
+                    t.raw_encoding,
+                    t.time_status,
+                    t.precision_ticks,
+                    t.tz_status,
+                    t.tz_offset_min,
+                    t.conversion_version,
+                    r.clock_domain,
+                    r.seq_domain,
+                    r.seq_no,
+                    r.created_by,
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// All events, ordered by ID.
+    pub fn events(&self) -> Result<Vec<EventRow>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, record, system, kind, meaning, ts, ts_min, ts_max, raw_i64, raw_text, \
+             raw_encoding, time_status, precision_ticks, tz_status, tz_offset_min, \
+             conversion_version, clock_domain, seq_domain, seq_no, created_by \
+             FROM events ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(EventRow {
+                id: r.get(0)?,
+                record: r.get(1)?,
+                system: r.get(2)?,
+                kind: r.get(3)?,
+                meaning: r.get(4)?,
+                time: TimeColumns {
+                    ts: r.get(5)?,
+                    ts_min: r.get(6)?,
+                    ts_max: r.get(7)?,
+                    raw_i64: r.get(8)?,
+                    raw_text: r.get(9)?,
+                    raw_encoding: r.get(10)?,
+                    time_status: r.get(11)?,
+                    precision_ticks: r.get(12)?,
+                    tz_status: r.get(13)?,
+                    tz_offset_min: r.get(14)?,
+                    conversion_version: r.get(15)?,
+                },
+                clock_domain: r.get(16)?,
+                seq_domain: r.get(17)?,
+                seq_no: r.get(18)?,
+                created_by: r.get(19)?,
+            })
+        })?;
+        rows.collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use af_core::time::{RawTime, RawValue, Time, TimeStatus};
+
+    fn tricky_times() -> Vec<Time> {
+        let dos_date = ((2026 - 1980) << 9) | (4 << 5) | 26;
+        let mut text = Time::from_unix_seconds(0);
+        text.key = None;
+        text.min = None;
+        text.max = None;
+        text.raw = RawTime {
+            encoding: "text".into(),
+            value: RawValue::Text("Nov  5 14:30:20".into()),
+        };
+        text.status = TimeStatus::YearInferred;
+        vec![
+            Time::from_ticks_1601(0),
+            Time::from_ticks_1601(i64::MAX as u64),
+            Time::from_ticks_1601(u64::MAX),
+            Time::from_unix_seconds(i64::MIN),
+            Time::from_unix_nanos(-1),
+            Time::from_dos_local(dos_date, 0x7400, Some(199)),
+            Time::from_dos_local_date(dos_date).with_local_offset(-330, true),
+            text,
+        ]
+    }
+
+    #[test]
+    fn time_columns_are_stored_unchanged() {
+        let mut store = Store::in_memory(256).unwrap();
+        let times = tricky_times();
+        let rows: Vec<EventRow> = times
+            .iter()
+            .enumerate()
+            .map(|(i, t)| EventRow {
+                id: u128::MAX - i as u128,
+                record: 7,
+                system: u128::MAX,
+                kind: "test.event".into(),
+                meaning: "test.written".into(),
+                time: t.to_columns(),
+                clock_domain: "wall".into(),
+                seq_domain: (i % 2 == 0).then(|| "test.seq".into()),
+                seq_no: (i % 2 == 0).then_some(i64::MIN + i as i64),
+                created_by: "test.plugin".into(),
+            })
+            .collect();
+        store.insert_events(&rows).unwrap();
+        let mut back = store.events().unwrap();
+        back.reverse(); // ordered by ID, which counts down
+        assert_eq!(back, rows);
+        for (row, t) in back.iter().zip(&times) {
+            assert_eq!(&Time::from_columns(&row.time).unwrap(), t);
+        }
+    }
+
+    #[test]
+    fn safe_settings_are_applied() {
+        let store = Store::in_memory(512).unwrap();
+        let get = |name: &str| -> String {
+            store
+                .connection()
+                .query_row(
+                    &format!("SELECT current_setting('{name}')::VARCHAR"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(get("threads"), "4");
+        assert_eq!(get("preserve_insertion_order"), "false");
+        assert!(
+            get("memory_limit").contains("488") || get("memory_limit").contains("512"),
+            "{}",
+            get("memory_limit")
+        );
+    }
+
+    #[test]
+    fn schema_has_all_four_tables_and_reopens() {
+        let dir = std::env::temp_dir().join(format!("af-store-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.duckdb");
+        drop(Store::open(&path, 256).unwrap());
+        let store = Store::open(&path, 256).unwrap(); // CREATE IF NOT EXISTS: reopening is fine
+        let n: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM information_schema.tables \
+                 WHERE table_name IN ('records', 'events', 'entities', 'links')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 4);
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

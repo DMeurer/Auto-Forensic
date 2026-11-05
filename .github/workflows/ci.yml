@@ -23,6 +23,8 @@ jobs:
       # Installs the toolchain pinned in rust-toolchain.toml, with rustfmt and clippy.
       - name: Toolchain
         run: rustup toolchain install
+      # Keeps the compiled bundled DuckDB (af-store) between runs; without it each run rebuilds it.
+      - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
       - name: Lint

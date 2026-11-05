@@ -14,6 +14,11 @@ publish = false
 [workspace.dependencies]
 af-core = { path = "crates/af-core" }
 af-host = { path = "crates/af-host" }
+af-store = { path = "crates/af-store" }
+
+# No debug info for dependencies: the bundled DuckDB with it filled a 79 GB disk (24 GB target).
+[profile.dev.package."*"]
+debug = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
