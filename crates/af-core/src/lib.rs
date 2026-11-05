@@ -3,6 +3,7 @@
 //! Core knows no operating system and no file format. OS-specific names and
 //! format parsers live in `os/` and `formats/`, and `cargo xtask check` enforces that.
 
+pub mod capability;
 pub mod concepts;
 pub mod ids;
 pub mod names;

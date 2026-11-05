@@ -5,6 +5,7 @@
 //! and identifying facts). Core ships only the `none` profile, for volumes without an operating
 //! system. The Windows profile lives in `os/af-windows`.
 
+use crate::capability::Capabilities;
 use crate::ids::SystemId;
 use crate::names::Kind;
 use crate::path::{CasePolicy, PathStyle};
@@ -36,8 +37,13 @@ pub trait OsProfile: Detector {
         new_id: &mut dyn FnMut() -> ViewId,
     ) -> Vec<View>;
 
-    /// The identity of a system this profile detected.
-    fn identity(&self, system: &System, volumes: &[&dyn VolumeProbe]) -> Identity;
+    /// The identity of a system this profile detected, using what `caps` offers.
+    fn identity(
+        &self,
+        system: &System,
+        volumes: &[&dyn VolumeProbe],
+        caps: &Capabilities<'_>,
+    ) -> Identity;
 }
 
 /// The profile for a family, if one is given.
@@ -49,10 +55,12 @@ pub fn profile_for<'a>(
 }
 
 /// Detects the systems on a source's volumes and builds their views and identities. Systems of a
-/// family without a profile keep no views. IDs come from the two generators.
+/// family without a profile keep no views. IDs come from the two generators. `caps` gives the
+/// capabilities of the source, the same for every system on it.
 pub fn build_systems(
     volumes: &[&dyn VolumeProbe],
     profiles: &[&dyn OsProfile],
+    caps: &Capabilities<'_>,
     new_system_id: impl FnMut() -> SystemId,
     mut new_view_id: impl FnMut() -> ViewId,
 ) -> (Vec<System>, Vec<Identity>) {
@@ -69,7 +77,7 @@ pub fn build_systems(
             continue;
         };
         system.views = profile.build_views(system, volumes, &mut new_view_id);
-        let identity = profile.identity(system, volumes);
+        let identity = profile.identity(system, volumes, caps);
         if system.label.is_none() {
             system.label = identity.label.clone();
         }
@@ -140,7 +148,12 @@ impl OsProfile for NoneProfile {
     }
 
     /// The volume labels, if any.
-    fn identity(&self, system: &System, volumes: &[&dyn VolumeProbe]) -> Identity {
+    fn identity(
+        &self,
+        system: &System,
+        volumes: &[&dyn VolumeProbe],
+        _caps: &Capabilities<'_>,
+    ) -> Identity {
         let labels: Vec<String> = system_volumes(system, volumes)
             .iter()
             .filter_map(|v| v.label())
@@ -179,7 +192,13 @@ mod tests {
         let a = MemVolume::new(1, &["DCIM"]).with_label("KINGSTON");
         let b = MemVolume::new(2, &["backup"]);
         let (sid, vid) = ids();
-        let (systems, identities) = build_systems(&[&a, &b], &[&NoneProfile], sid, vid);
+        let (systems, identities) = build_systems(
+            &[&a, &b],
+            &[&NoneProfile],
+            &Capabilities::default(),
+            sid,
+            vid,
+        );
         assert_eq!(systems.len(), 1);
         let s = &systems[0];
         assert_eq!(s.family, Family::None);
@@ -196,7 +215,13 @@ mod tests {
         let a = MemVolume::new(1, &["x"]);
         let b = MemVolume::new(2, &["y"]).with_case(CasePolicy::Exact);
         let (sid, vid) = ids();
-        let (systems, identities) = build_systems(&[&a, &b], &[&NoneProfile], sid, vid);
+        let (systems, identities) = build_systems(
+            &[&a, &b],
+            &[&NoneProfile],
+            &Capabilities::default(),
+            sid,
+            vid,
+        );
         assert_eq!(systems[0].views[0].style.case, CasePolicy::Exact);
         assert_eq!(identities[0].label, None);
         assert_eq!(identities[0].note.as_deref(), Some("no volume label"));
@@ -206,7 +231,7 @@ mod tests {
     fn family_without_a_profile_keeps_no_views() {
         let a = MemVolume::new(1, &["x"]);
         let (sid, vid) = ids();
-        let (systems, identities) = build_systems(&[&a], &[], sid, vid);
+        let (systems, identities) = build_systems(&[&a], &[], &Capabilities::default(), sid, vid);
         assert_eq!(systems[0].family, Family::None);
         assert!(systems[0].views.is_empty());
         assert!(identities[0].note.is_some());
