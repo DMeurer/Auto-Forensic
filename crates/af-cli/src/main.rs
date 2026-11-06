@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 /// Every compiled-in plugin, in the order the runner calls them within a phase. Adding a plugin
 /// is one line here (the Linux canary, C2, checks that nothing else in core has to change).
-const PLUGINS: &[&dyn Plugin] = &[];
+const PLUGINS: &[&dyn Plugin] = &[&af_windows::plugins::HiveRootKeys];
 
 #[derive(Parser)]
 #[command(

@@ -136,6 +136,21 @@ fn renamed_hives_are_identified() {
     assert!(ok, "{err}");
     assert!(status.contains("windows.hive.system: 2"), "{status}");
     assert!(status.contains("no plugin has run on it yet"), "{status}");
+    // C0c: af run reads the hives' root keys into facts.
+    let (ok, out, err) = af(&["run", c]);
+    assert!(ok, "{err}{out}");
+    let (_, status, _) = af(&["status", c]);
+    assert!(
+        status.contains("windows.hive.root_keys v1: read, 4 items"),
+        "{status}"
+    );
+    assert!(
+        status.contains("windows.hive.root_keys v1: read, 5 items"),
+        "{status}"
+    );
+    // A second run extracts nothing.
+    let (_, out, _) = af(&["run", c]);
+    assert!(out.contains(": 0 extracted, 0 events loaded"), "{out}");
     std::fs::remove_dir_all(&parent).unwrap();
 }
 

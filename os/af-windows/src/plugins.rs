@@ -1,0 +1,177 @@
+//! Windows plugins.
+//!
+//! [`HiveRootKeys`] (piece C0c) is the first: every hive's root keys as facts. It stands in for
+//! the registry plugins in the canaries until those exist, using only the root-key reader.
+
+use af_core::ids::FactId;
+use af_core::names::Kind;
+use af_core::plugin::{Input, Manifest, Outcome, Phase};
+use af_core::runner::{NewFact, Plugin, RunContext};
+use af_core::system::Family;
+use std::sync::OnceLock;
+
+/// The hive kinds it reads; all optional, so it runs on whatever hives a system has.
+const HIVES: &[&str] = &[
+    "windows.hive.system",
+    "windows.hive.software",
+    "windows.hive.ntuser",
+    "windows.hive.usrclass",
+    "windows.hive.security",
+    "windows.hive.sam",
+    "windows.hive.amcache",
+    "windows.hive.unknown",
+];
+
+/// Every hive's root keys as facts of kind `windows.hive.root_key`.
+pub struct HiveRootKeys;
+
+impl Plugin for HiveRootKeys {
+    fn manifest(&self) -> &Manifest {
+        static M: OnceLock<Manifest> = OnceLock::new();
+        M.get_or_init(|| Manifest {
+            id: Kind::new("windows.hive.root_keys").expect("valid kind"),
+            version: 1,
+            applies_to: vec![Family::Windows],
+            phases: vec![Phase::Extract],
+            inputs: HIVES
+                .iter()
+                .map(|k| Input {
+                    kind: Kind::new(k).expect("valid kind"),
+                    required: false,
+                })
+                .collect(),
+            needs: vec![],
+            produces: vec![Kind::new("windows.hive.root_key").expect("valid kind")],
+        })
+    }
+
+    fn extract(&self, ctx: &mut RunContext<'_>) -> Outcome {
+        let Some(opener) = ctx.opener else {
+            return Outcome::NotAcquired;
+        };
+        let fact_kind = Kind::new("windows.hive.root_key").expect("valid kind");
+        let mut n = 0;
+        for a in ctx
+            .artifacts
+            .iter()
+            .filter(|a| HIVES.contains(&a.kind.as_str()))
+        {
+            let src = match opener.open(a) {
+                Ok(s) => s,
+                Err(e) => return Outcome::Failed(format!("{}: {e}", a.locator)),
+            };
+            let mut data = vec![0; src.len() as usize];
+            if let Err(e) = src.read_exact_at(0, &mut data) {
+                return Outcome::Failed(format!("{}: {e}", a.locator));
+            }
+            let names = match af_fmt_regf::root_subkey_names(&data) {
+                Ok(n) => n,
+                Err(e) => return Outcome::UnsupportedSchema(format!("{}: {e}", a.locator)),
+            };
+            for name in names {
+                let subject = format!("{}:{name}", a.kind);
+                ctx.sink.fact(
+                    &self.manifest().id,
+                    ctx.system.id,
+                    NewFact {
+                        id: FactId::derive(&a.source.to_string(), &a.locator, &fact_kind, &subject),
+                        source: a.source,
+                        kind: fact_kind.clone(),
+                        subject,
+                        attrs: None,
+                    },
+                );
+                n += 1;
+            }
+        }
+        Outcome::Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use af_core::artifact::Artifact;
+    use af_core::bytes::{ByteSource, Locator, MemSource};
+    use af_core::capability::Capabilities;
+    use af_core::ids::{SourceId, SystemId};
+    use af_core::runner::{Opener, Sink, Target, run};
+    use af_core::system::System;
+    use af_fmt_regf::build_test_hive;
+
+    struct Hives(Vec<(Artifact, Vec<u8>)>);
+
+    impl Opener for Hives {
+        fn open(&self, a: &Artifact) -> std::io::Result<Box<dyn ByteSource>> {
+            let (_, data) = self.0.iter().find(|(x, _)| x == a).expect("known artifact");
+            Ok(Box::new(MemSource::new(data.clone(), a.locator.clone())))
+        }
+    }
+
+    #[derive(Default)]
+    struct Facts(Vec<String>);
+
+    impl Sink for Facts {
+        fn emit(&mut self, _: &Kind, _: &Kind, payload: String) {
+            self.0.push(payload);
+        }
+        fn fact(&mut self, _: &Kind, _: SystemId, f: NewFact) {
+            self.0.push(f.subject);
+        }
+    }
+
+    #[test]
+    fn root_keys_become_facts() {
+        let hive = |kind: &str, src: u128, roots: &[&str]| {
+            (
+                Artifact {
+                    kind: Kind::new(kind).unwrap(),
+                    locator: Locator::root("source.loose", &src.to_string()),
+                    source: SourceId(src),
+                    system: Some(SystemId(1)),
+                    sha256: format!("{src}"),
+                },
+                build_test_hive(roots, "lh"),
+            )
+        };
+        let opener = Hives(vec![
+            hive("windows.hive.system", 1, &["MountedDevices", "Select"]),
+            hive("windows.hive.ntuser", 2, &["Control Panel", "Software"]),
+        ]);
+        let sys = System {
+            id: SystemId(1),
+            family: Family::Windows,
+            label: None,
+            parent: None,
+            volumes: vec![],
+            views: vec![],
+        };
+        let artifacts = opener.0.iter().map(|(a, _)| a.clone()).collect();
+        let targets = [Target::new(
+            &sys,
+            Capabilities::default(),
+            artifacts,
+            Some(&opener),
+        )];
+        let mut sink = Facts::default();
+        let mut log = af_core::plugin::OutcomeLog::new();
+        run(
+            &[&HiveRootKeys],
+            &targets,
+            &mut sink,
+            &mut log,
+            &mut af_core::runner::RunLog::new(),
+        );
+        sink.0.sort();
+        assert_eq!(
+            sink.0,
+            [
+                "windows.hive.ntuser:Control Panel",
+                "windows.hive.ntuser:Software",
+                "windows.hive.system:MountedDevices",
+                "windows.hive.system:Select",
+            ]
+        );
+        assert_eq!(log.all()[0].outcome, Outcome::Ok(4));
+    }
+}
