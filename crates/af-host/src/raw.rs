@@ -25,8 +25,9 @@ impl RawImage {
         let mut segments = Vec::with_capacity(files.len());
         let mut len = 0u64;
         for f in files {
-            let file = File::open(f)?;
-            let n = file.metadata()?.len();
+            let mut file = File::open(f)?;
+            // Block devices report 0 in their metadata; the end offset works for both.
+            let n = file.seek(SeekFrom::End(0))?;
             segments.push((len, Mutex::new(file)));
             len += n;
         }

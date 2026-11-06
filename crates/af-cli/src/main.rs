@@ -239,6 +239,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(out, "{}", p.as_of(s.id)?.display())?;
                 writeln!(out, "added {} {} {:?}", s.kind, s.id, s.label)?;
                 writeln!(out, "sha256 {}", s.sha256)?;
+                if s.kind == "device" {
+                    for (dev, at) in af_host::device::mounted(&s.files[0]) {
+                        writeln!(
+                            out,
+                            "warning: {dev} is mounted at {at}; the mount can write while af reads. Unmount it first"
+                        )?;
+                    }
+                    writeln!(
+                        out,
+                        "note: a live device isn't hashed. To block writes, run `sudo blockdev --setro {}`, or image it and add the image",
+                        s.files[0].display()
+                    )?;
+                }
                 if s.kind == "loose" {
                     // shortcut: reads the whole copy; fine for hives, revisit for large loose files.
                     let kind = match as_kind {

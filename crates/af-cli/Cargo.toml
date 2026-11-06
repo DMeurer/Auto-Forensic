@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 af-core.workspace = true
+af-host.workspace = true
 af-store.workspace = true
 af-windows.workspace = true
 af-linux.workspace = true
@@ -24,5 +25,4 @@ workspace = true
 [dev-dependencies]
 af-fmt-regf.workspace = true
 af-fmt-utmp.workspace = true
-af-host.workspace = true
 duckdb = { version = "=1.20000.1", default-features = false, features = ["bundled"] }

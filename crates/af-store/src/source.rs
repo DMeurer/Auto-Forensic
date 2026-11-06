@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MIB: u64 = 1 << 20;
+/// What a device source holds where others hold their hash and fingerprint.
+pub const LIVE: &str = "live, not hashed";
+
 const IMAGE_EXTENSIONS: &[&str] = &[
     "e01", "dd", "raw", "img", "000", "001", "vmdk", "vhd", "vhdx",
 ];
@@ -59,7 +62,7 @@ impl AsOf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceInfo {
     pub id: SourceId,
-    /// `image` or `loose`.
+    /// `image`, `folder`, `device` or `loose`.
     pub kind: String,
     pub label: String,
     pub size: u64,
@@ -78,7 +81,10 @@ impl Project {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (kind, files, stored) = if path.is_dir() {
+        let (kind, files, stored) = if af_host::device::is_block_device(&path) {
+            let stored = vec![path.to_string_lossy().into_owned()];
+            ("device", vec![path.clone()], stored)
+        } else if path.is_dir() {
             let stored = vec![path.to_string_lossy().into_owned()];
             ("folder", vec![path.clone()], stored)
         } else if is_image(&path) {
@@ -105,7 +111,26 @@ impl Project {
                 vec![rel.to_string_lossy().into_owned()],
             )
         };
-        let (size, sha256, fingerprint) = if kind == "folder" {
+        let (size, sha256, fingerprint) = if kind == "device" {
+            // A live device can change under us, so a hash would prove nothing later (I28).
+            let img = af_host::raw::RawImage::open(&files, af_core::bytes::Locator::default())
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::PermissionDenied => std::io::Error::new(
+                        e.kind(),
+                        format!(
+                            "{}: reading a device needs root or the disk group, or read access just for it (`sudo setfacl -m u:$USER:r {}`)",
+                            path.display(),
+                            path.display()
+                        ),
+                    ),
+                    _ => e,
+                })?;
+            (
+                af_core::bytes::ByteSource::len(&img),
+                LIVE.into(),
+                LIVE.into(),
+            )
+        } else if kind == "folder" {
             let (size, fp, sha) = folder_measure(&path, true)?;
             (size, sha.expect("asked for the full hash"), fp)
         } else {
@@ -125,7 +150,7 @@ impl Project {
             duckdb::params![id.0, kind, label, size, sha256, fingerprint, added],
         )?;
         for (seq, (f, s)) in files.iter().zip(&stored).enumerate() {
-            let len = if kind == "folder" {
+            let len = if kind == "folder" || kind == "device" {
                 size
             } else {
                 std::fs::metadata(f)?.len()
@@ -291,6 +316,13 @@ impl Project {
         if s.kind == "loose" {
             return Err(ProjectError::Mismatch(
                 "only images and folders are referenced; a loose file's copy lives in the project"
+                    .into(),
+            ));
+        }
+        if s.kind == "device" {
+            // Without a hash there is nothing to prove the new device is the same one.
+            return Err(ProjectError::Mismatch(
+                "a live device has no hash to check a new path against; add it as a new source"
                     .into(),
             ));
         }
