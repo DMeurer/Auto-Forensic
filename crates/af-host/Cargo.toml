@@ -13,9 +13,9 @@ workspace = true
 [dependencies]
 af-core.workspace = true
 tempfile = "3.27.0"
+ewf = "0.4.10"
+sha2 = "0.11.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl"] }
 
-[dev-dependencies]
-sha2 = "0.11.1"
