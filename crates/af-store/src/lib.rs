@@ -240,6 +240,15 @@ impl Store {
         Self::setup(Connection::open(path)?, memory_limit_mb)
     }
 
+    /// Opens an existing store read-only, without touching its schema. Fails if a process is
+    /// writing to it (DuckDB allows one writer, and no readers beside it).
+    pub fn open_read_only(path: &Path) -> Result<Self, Error> {
+        let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?;
+        let conn = Connection::open_with_flags(path, config)?;
+        conn.execute_batch("SET threads = 4;")?;
+        Ok(Self { conn })
+    }
+
     /// An in-memory store, for tests.
     pub fn in_memory(memory_limit_mb: u32) -> Result<Self, Error> {
         Self::setup(Connection::open_in_memory()?, memory_limit_mb)

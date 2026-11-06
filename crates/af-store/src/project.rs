@@ -7,6 +7,14 @@
 //! - `tmp/`: temporary run folders (F3), cleared of crash leftovers whenever the project opens.
 //!
 //! Creating never touches a folder that already has something in it.
+//!
+//! **Reading during runs (F32, your decision of 2026-11-06).** DuckDB lets one process write a
+//! database file and no other process open it meanwhile. A run therefore writes into its spool
+//! files (F17) and opens `project.duckdb` for writing only for the final load, about 1.5 minutes
+//! per 100 million events. Read-only commands ([`Project::open_read_only`]) wait for that load
+//! and then go ahead; after the wait they stop with a clear message. Known limit: during the
+//! final load the project can't be read. Switching the store to a database with concurrent
+//! readers and a writer would remove it.
 
 use crate::{Error as DbError, Store};
 use af_host::temp::TempArea;
@@ -44,6 +52,8 @@ pub enum ProjectError {
     NotAProject(PathBuf),
     /// The store has no project row.
     NoInfo(PathBuf),
+    /// A run is writing the project (its final load), and the wait ran out.
+    Busy(PathBuf),
     /// No source with this ID.
     NoSource(String),
     /// A relink target that isn't the same image, or a relink of a loose file.
@@ -58,6 +68,11 @@ impl fmt::Display for ProjectError {
             Self::NotEmpty(p) => write!(f, "{} exists and isn't empty", p.display()),
             Self::NotAProject(p) => write!(f, "{} has no {STORE_FILE}", p.display()),
             Self::NoInfo(p) => write!(f, "{} has no project information", p.display()),
+            Self::Busy(p) => write!(
+                f,
+                "{} is being written by a run (its final load); try again in a minute",
+                p.display()
+            ),
             Self::NoSource(id) => write!(f, "no source {id}"),
             Self::Mismatch(m) => write!(f, "{m}"),
             Self::Io(e) => write!(f, "{e}"),
@@ -122,6 +137,34 @@ impl Project {
         Ok(project)
     }
 
+    /// Opens the project read-only, waiting up to `wait` while a run holds it for writing.
+    pub fn open_read_only(dir: &Path, wait: std::time::Duration) -> Result<Self, ProjectError> {
+        let path = dir.join(STORE_FILE);
+        if !path.is_file() {
+            return Err(ProjectError::NotAProject(dir.to_path_buf()));
+        }
+        let start = std::time::Instant::now();
+        let store = loop {
+            match Store::open_read_only(&path) {
+                Ok(s) => break s,
+                Err(e) if is_lock_error(&e) => {
+                    if start.elapsed() >= wait {
+                        return Err(ProjectError::Busy(dir.to_path_buf()));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
+        let project = Self {
+            dir: dir.to_path_buf(),
+            store,
+            temp: TempArea::in_project(dir)?,
+        };
+        project.info()?;
+        Ok(project)
+    }
+
     pub fn info(&self) -> Result<ProjectInfo, ProjectError> {
         self.store
             .connection()
@@ -141,6 +184,15 @@ impl Project {
                 other => ProjectError::Db(other),
             })
     }
+}
+
+/// Whether DuckDB refused the file because another process holds its lock.
+fn is_lock_error(e: &DbError) -> bool {
+    let m = e.to_string();
+    // Linux and macOS: DuckDB's own lock message. Windows: the system's sharing violation.
+    m.contains("Could not set lock")
+        || m.contains("Conflicting lock")
+        || m.contains("being used by another process")
 }
 
 #[cfg(test)]

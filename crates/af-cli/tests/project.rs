@@ -138,3 +138,29 @@ fn renamed_hives_are_identified() {
     assert!(status.contains("no plugin has run on it yet"), "{status}");
     std::fs::remove_dir_all(&parent).unwrap();
 }
+
+/// F32: read-only commands wait while a run writes the project, then say so; afterwards they work.
+#[test]
+fn reading_waits_for_a_writing_run() {
+    let parent = std::env::temp_dir().join(format!("af-cli-lock-{}", std::process::id()));
+    let dir = parent.join("case");
+    let d = dir.to_str().unwrap();
+    assert!(af(&["project", "new", d]).0);
+    // Stand-in for a run's final load: hold the project open for writing.
+    let writer = af_store::Store::open(&dir.join("project.duckdb"), 256).unwrap();
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["status", d])
+        .env("AF_LOCK_WAIT_SECS", "1")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("being written by a run"),
+        "{err}"
+    );
+    drop(writer);
+    let (ok, out, err) = af(&["status", d]);
+    assert!(ok, "{err}");
+    assert!(out.contains("sources: 0"), "{out}");
+    std::fs::remove_dir_all(&parent).unwrap();
+}

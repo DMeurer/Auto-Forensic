@@ -110,6 +110,15 @@ fn parse_utc(text: &str) -> Result<i64, String> {
     Ok((key.0 - af_core::time::UNIX_EPOCH_KEY).div_euclid(af_core::time::TICKS_PER_SECOND))
 }
 
+/// How long read-only commands wait while a run writes the project: AF_LOCK_WAIT_SECS, or 30 s.
+fn wait() -> std::time::Duration {
+    let secs = std::env::var("AF_LOCK_WAIT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    std::time::Duration::from_secs(secs)
+}
+
 fn source_id(text: &str) -> Result<SourceId, String> {
     u128::from_str_radix(text, 16)
         .map(SourceId)
@@ -152,7 +161,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(out, "created project {name:?} in {}", dir.display())?;
         }
         Command::Project(ProjectCommand::Info { dir }) => {
-            let info = Project::open(&dir)?.info()?;
+            let info = Project::open_read_only(&dir, wait())?.info()?;
             writeln!(out, "name:     {}", info.name)?;
             writeln!(
                 out,
@@ -163,10 +172,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(out, "plugins:  {} compiled in", PLUGINS.len())?;
         }
         Command::Status { project } => {
-            write!(out, "{}", Project::open(&project)?.status()?)?;
+            write!(
+                out,
+                "{}",
+                Project::open_read_only(&project, wait())?.status()?
+            )?;
         }
         Command::System(SystemCommand::List { project }) => {
-            let p = Project::open(&project)?;
+            let p = Project::open_read_only(&project, wait())?;
             for s in p.systems()? {
                 let label = s.label.as_deref().unwrap_or("-");
                 writeln!(out, "{} {:8} {label} (source {})", s.id, s.family, s.source)?;
@@ -230,7 +243,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             SourceCommand::List { project } => {
-                let p = Project::open(&project)?;
+                let p = Project::open_read_only(&project, wait())?;
                 let index = p.store.artifacts()?;
                 for s in p.sources()? {
                     writeln!(
