@@ -203,4 +203,32 @@ mod tests {
             ]
         );
     }
+
+    /// I8: LoneWolf's four GPT partitions match `mmls` (start and length in sectors).
+    #[test]
+    fn lonewolf_gpt_matches_mmls() {
+        let dir = PathBuf::from("/mnt/hgfs/VM_sharedFolder/DF/various/LoneWolf");
+        let files: Vec<PathBuf> = (1..=9)
+            .map(|i| dir.join(format!("LoneWolf.E{i:02}")))
+            .collect();
+        if !files.iter().all(|f| f.is_file()) {
+            return;
+        }
+        let src: Arc<dyn ByteSource> =
+            Arc::from(crate::ewf::open_image(&files, Locator::root("source.image", "t")).unwrap());
+        let l = list(src).unwrap();
+        let parts: Vec<_> = ids(&l)
+            .into_iter()
+            .filter(|v| !v.0.starts_with("gap"))
+            .map(|v| (v.0, v.1, v.2))
+            .collect();
+        let want = [
+            ("1", 2048, 1_021_952),
+            ("2", 1_024_000, 202_752),
+            ("3", 1_226_752, 32_768),
+            ("4", 1_259_520, 998_955_008),
+        ];
+        assert_eq!(parts, want.map(|(i, s, n)| (i.to_string(), s, n)));
+        assert!(l.notes.is_empty(), "{:?}", l.notes);
+    }
 }
