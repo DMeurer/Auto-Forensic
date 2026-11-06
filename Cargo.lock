@@ -15,10 +15,12 @@ dependencies = [
  "af-core",
  "af-fmt-regf",
  "af-fmt-utmp",
+ "af-host",
  "af-linux",
  "af-store",
  "af-windows",
  "clap",
+ "duckdb",
 ]
 
 [[package]]

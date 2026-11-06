@@ -82,7 +82,7 @@ impl OsProfile for WindowsProfile {
         let Some(vol) = system_volumes(system, volumes).into_iter().next() else {
             return Vec::new();
         };
-        [
+        let mut found: Vec<(VolumeId, ViewPath, Kind)> = [
             ("SYSTEM", "windows.hive.system"),
             ("SOFTWARE", "windows.hive.software"),
             ("SAM", "windows.hive.sam"),
@@ -97,7 +97,23 @@ impl OsProfile for WindowsProfile {
         })
         .filter(|(p, _)| vol.exists(p))
         .map(|(p, kind)| (vol.id(), p, Kind::new(kind).expect("valid kind")))
-        .collect()
+        .collect();
+        // Each user profile's NTUSER.DAT.
+        let users = MemVolume::path("Users");
+        for user in vol.list(&users) {
+            let ntuser = users.join(user).join(af_core::path::Name::from_text(
+                "NTUSER.DAT",
+                af_core::path::NameKind::Utf16,
+            ));
+            if vol.exists(&ntuser) {
+                found.push((
+                    vol.id(),
+                    ntuser,
+                    Kind::new("windows.hive.ntuser").expect("valid kind"),
+                ));
+            }
+        }
+        found
     }
 
     fn identity(

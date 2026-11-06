@@ -121,6 +121,63 @@ impl Plugin for HiveRootKeys {
     }
 }
 
+/// One `windows.user_profile` fact per user profile folder that holds an NTUSER.DAT: the
+/// Windows user key until SIDs come with the registry plugins. The subject is the folder name.
+pub struct UserProfiles;
+
+impl Plugin for UserProfiles {
+    fn manifest(&self) -> &Manifest {
+        static M: OnceLock<Manifest> = OnceLock::new();
+        M.get_or_init(|| Manifest {
+            id: Kind::new("windows.user_profiles").expect("valid kind"),
+            version: 1,
+            applies_to: vec![Family::Windows],
+            phases: vec![Phase::Extract],
+            inputs: vec![Input {
+                kind: Kind::new("windows.hive.ntuser").expect("valid kind"),
+                required: true,
+            }],
+            needs: vec![],
+            produces: vec![Kind::new("windows.user_profile").expect("valid kind")],
+        })
+    }
+
+    fn extract(&self, ctx: &mut RunContext<'_>) -> Outcome {
+        let fact_kind = Kind::new("windows.user_profile").expect("valid kind");
+        let mut n = 0;
+        for a in ctx
+            .artifacts
+            .iter()
+            .filter(|a| a.kind.as_str() == "windows.hive.ntuser")
+        {
+            // A profile hive sits at Users/<name>/NTUSER.DAT; a loose NTUSER.DAT has no folder.
+            let Some(step) = a.locator.steps().last() else {
+                continue;
+            };
+            let parts: Vec<&str> = step.id.split('/').collect();
+            let [.., users, name, _] = parts.as_slice() else {
+                continue;
+            };
+            if !users.eq_ignore_ascii_case("users") {
+                continue;
+            }
+            ctx.sink.fact(
+                &self.manifest().id,
+                ctx.system.id,
+                NewFact {
+                    id: FactId::derive(&a.source.to_string(), &a.locator, &fact_kind, name),
+                    source: a.source,
+                    kind: fact_kind.clone(),
+                    subject: name.to_string(),
+                    attrs: None,
+                },
+            );
+            n += 1;
+        }
+        Outcome::Ok(n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

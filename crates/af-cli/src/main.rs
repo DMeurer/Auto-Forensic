@@ -18,6 +18,7 @@ use std::process::ExitCode;
 /// is one line here (the Linux canary, C2, checks that nothing else in core has to change).
 const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::plugins::HiveRootKeys,
+    &af_windows::plugins::UserProfiles,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

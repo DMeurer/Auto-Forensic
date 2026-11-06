@@ -108,6 +108,11 @@ pub trait VolumeProbe {
     fn read(&self, _path: &ViewPath) -> Option<Vec<u8>> {
         None
     }
+    /// The names directly inside a folder, for profiles that look for per-user files
+    /// (`Users/<name>/NTUSER.DAT`). Empty if absent or the volume can't list.
+    fn list(&self, _dir: &ViewPath) -> Vec<Name> {
+        Vec::new()
+    }
 }
 
 /// An in-memory volume that only knows which paths exist, for tests and fixtures. Paths are

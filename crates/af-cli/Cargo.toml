@@ -24,3 +24,5 @@ workspace = true
 [dev-dependencies]
 af-fmt-regf.workspace = true
 af-fmt-utmp.workspace = true
+af-host.workspace = true
+duckdb = { version = "=1.20000.1", default-features = false, features = ["bundled"] }

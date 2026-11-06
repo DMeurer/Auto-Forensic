@@ -97,6 +97,16 @@ impl VolumeProbe for FolderVolume {
     fn read(&self, path: &ViewPath) -> Option<Vec<u8>> {
         self.on_disk(path).and_then(|p| std::fs::read(p).ok())
     }
+    fn list(&self, dir: &ViewPath) -> Vec<Name> {
+        let Some(p) = self.on_disk(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<Name> = std::fs::read_dir(p)
+            .map(|it| it.flatten().map(|e| name_of(&e.file_name())).collect())
+            .unwrap_or_default();
+        names.sort_by_key(|n| n.display());
+        names
+    }
     fn case(&self) -> CasePolicy {
         if cfg!(any(windows, target_os = "macos")) {
             CasePolicy::Insensitive
