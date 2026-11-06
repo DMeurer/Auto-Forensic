@@ -44,6 +44,10 @@ pub enum ProjectError {
     NotAProject(PathBuf),
     /// The store has no project row.
     NoInfo(PathBuf),
+    /// No source with this ID.
+    NoSource(String),
+    /// A relink target that isn't the same image, or a relink of a loose file.
+    Mismatch(String),
     Io(std::io::Error),
     Db(DbError),
 }
@@ -54,6 +58,8 @@ impl fmt::Display for ProjectError {
             Self::NotEmpty(p) => write!(f, "{} exists and isn't empty", p.display()),
             Self::NotAProject(p) => write!(f, "{} has no {STORE_FILE}", p.display()),
             Self::NoInfo(p) => write!(f, "{} has no project information", p.display()),
+            Self::NoSource(id) => write!(f, "no source {id}"),
+            Self::Mismatch(m) => write!(f, "{m}"),
             Self::Io(e) => write!(f, "{e}"),
             Self::Db(e) => write!(f, "{e}"),
         }

@@ -100,6 +100,17 @@ opaque_id!(
     /// The ID of a fact, unique within a project.
     FactId
 );
+opaque_id!(
+    /// The ID of a source (an image or a loose file added to a project): a random UUID, so it
+    /// stays the same when the image moves.
+    SourceId
+);
+
+impl SourceId {
+    pub fn new_random() -> Self {
+        Self(uuid::Uuid::new_v4().as_u128())
+    }
+}
 
 /// A file's identity within one system, opaque to core.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

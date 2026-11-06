@@ -39,6 +39,7 @@ dependencies = [
  "af-core",
  "af-host",
  "duckdb",
+ "sha2",
 ]
 
 [[package]]

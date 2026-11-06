@@ -2,6 +2,8 @@
 //!
 //! Tables:
 //! - `project`: one row, the project's name, creation time and creating af version (F19).
+//! - `sources` and `source_files`: what was added, with hashes and where its files are (F20).
+//!   Records, events and entities carry their `source`, so removing a source removes them.
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -19,6 +21,7 @@ use duckdb::{Connection, params};
 use std::path::Path;
 
 pub mod project;
+pub mod source;
 
 pub use duckdb::Error;
 
@@ -30,8 +33,24 @@ CREATE TABLE IF NOT EXISTS project (
     created_unix BIGINT NOT NULL,
     created_by_version VARCHAR NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sources (
+    id UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    label VARCHAR NOT NULL,
+    size UBIGINT NOT NULL,
+    sha256 VARCHAR NOT NULL,
+    fingerprint VARCHAR NOT NULL,
+    added_unix BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS source_files (
+    source UHUGEINT NOT NULL,
+    seq INTEGER NOT NULL,
+    path VARCHAR NOT NULL,
+    size UBIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS records (
     id UHUGEINT NOT NULL,
+    source UHUGEINT NOT NULL,
     system UHUGEINT NOT NULL,
     kind VARCHAR NOT NULL,
     locator VARCHAR NOT NULL,
@@ -47,6 +66,7 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE TABLE IF NOT EXISTS events (
     id UHUGEINT NOT NULL,
+    source UHUGEINT NOT NULL,
     record UHUGEINT NOT NULL,
     system UHUGEINT NOT NULL,
     kind VARCHAR NOT NULL,
@@ -69,6 +89,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE TABLE IF NOT EXISTS entities (
     id UHUGEINT NOT NULL,
+    source UHUGEINT NOT NULL,
     system UHUGEINT NOT NULL,
     kind VARCHAR NOT NULL,
     key VARCHAR NOT NULL,
@@ -101,6 +122,8 @@ pub struct Store {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
     pub id: u128,
+    /// The source it came from, so removing the source removes it (F20).
+    pub source: u128,
     pub record: u128,
     pub system: u128,
     pub kind: String,
@@ -146,6 +169,7 @@ impl Store {
                 let t = &r.time;
                 app.append_row(params![
                     r.id,
+                    r.source,
                     r.record,
                     r.system,
                     r.kind,
@@ -215,7 +239,7 @@ impl Store {
     /// All events, ordered by ID.
     pub fn events(&self) -> Result<Vec<EventRow>, Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, record, system, kind, meaning, ts, ts_min, ts_max, raw_i64, raw_text, \
+            "SELECT id, source, record, system, kind, meaning, ts, ts_min, ts_max, raw_i64, raw_text, \
              raw_encoding, time_status, precision_ticks, tz_status, tz_offset_min, \
              conversion_version, clock_domain, seq_domain, seq_no, created_by \
              FROM events ORDER BY id",
@@ -223,27 +247,28 @@ impl Store {
         let rows = stmt.query_map([], |r| {
             Ok(EventRow {
                 id: r.get(0)?,
-                record: r.get(1)?,
-                system: r.get(2)?,
-                kind: r.get(3)?,
-                meaning: r.get(4)?,
+                source: r.get(1)?,
+                record: r.get(2)?,
+                system: r.get(3)?,
+                kind: r.get(4)?,
+                meaning: r.get(5)?,
                 time: TimeColumns {
-                    ts: r.get(5)?,
-                    ts_min: r.get(6)?,
-                    ts_max: r.get(7)?,
-                    raw_i64: r.get(8)?,
-                    raw_text: r.get(9)?,
-                    raw_encoding: r.get(10)?,
-                    time_status: r.get(11)?,
-                    precision_ticks: r.get(12)?,
-                    tz_status: r.get(13)?,
-                    tz_offset_min: r.get(14)?,
-                    conversion_version: r.get(15)?,
+                    ts: r.get(6)?,
+                    ts_min: r.get(7)?,
+                    ts_max: r.get(8)?,
+                    raw_i64: r.get(9)?,
+                    raw_text: r.get(10)?,
+                    raw_encoding: r.get(11)?,
+                    time_status: r.get(12)?,
+                    precision_ticks: r.get(13)?,
+                    tz_status: r.get(14)?,
+                    tz_offset_min: r.get(15)?,
+                    conversion_version: r.get(16)?,
                 },
-                clock_domain: r.get(16)?,
-                seq_domain: r.get(17)?,
-                seq_no: r.get(18)?,
-                created_by: r.get(19)?,
+                clock_domain: r.get(17)?,
+                seq_domain: r.get(18)?,
+                seq_no: r.get(19)?,
+                created_by: r.get(20)?,
             })
         })?;
         rows.collect()
@@ -287,6 +312,7 @@ mod tests {
             .enumerate()
             .map(|(i, t)| EventRow {
                 id: u128::MAX - i as u128,
+                source: 3,
                 record: 7,
                 system: u128::MAX,
                 kind: "test.event".into(),
@@ -314,6 +340,7 @@ mod tests {
         };
         EventRow {
             id,
+            source: 1,
             record: id,
             system: 1,
             kind: "test.event".into(),
@@ -391,7 +418,7 @@ mod tests {
                 .unwrap()
                 .connection()
                 .execute_batch(&format!(
-                    "INSERT INTO events SELECT ({w}::UHUGEINT << 64) + i::UHUGEINT, i // 8, {w}, \
+                    "INSERT INTO events SELECT ({w}::UHUGEINT << 64) + i::UHUGEINT, {w}, i // 8, {w}, \
                      'bench.event', 'bench.written', \
                      (130000000000000000 + hash(i, {w}) % 40000000000000000)::BIGINT AS t, t, t, t, \
                      NULL, 'ticks_1601', 'ok', 1, 'utc', NULL, 1, 'wall', NULL, NULL, 'bench' \
