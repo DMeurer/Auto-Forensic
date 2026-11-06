@@ -10,6 +10,8 @@
 //! 3. **Windows names stay in Windows and format crates.** `HKLM`, `HKEY_LOCAL_MACHINE`,
 //!    `FILETIME` (any case) and drive paths like `C:\` appear only under `formats/` and in
 //!    `os/af-windows*`. `xtask` itself is not scanned, because it names the words.
+//! 4. **Unsafe code only in the host crate.** Only `af-host` may lift the workspace's
+//!    `unsafe_code = "deny"`, for OS calls such as a Windows drive's size.
 //!
 //! Every violation is printed as `path:line: [rule] message`, and the exit code is 1 if any.
 
@@ -163,9 +165,44 @@ fn check(root: &Path) -> Result<Vec<Violation>, Box<dyn std::error::Error>> {
             }
         }
     }
+    for pkg in meta.workspace_packages() {
+        if pkg.name.as_str() == "af-host" || layers[&pkg.id] == Layer::Tool {
+            continue;
+        }
+        let dir = pkg
+            .manifest_path
+            .parent()
+            .map(|d| d.as_std_path().to_path_buf())
+            .unwrap_or_default();
+        for file in files(&dir, &["rs"]) {
+            for line in unsafe_allows(&std::fs::read_to_string(&file)?) {
+                v.push(Violation {
+                    path: rel(&root, &file),
+                    line,
+                    rule: "unsafe-only-in-host",
+                    message: format!(
+                        "`{}` lifts the unsafe_code lint; only af-host may",
+                        pkg.name
+                    ),
+                });
+            }
+        }
+    }
     v.sort();
     v.dedup();
     Ok(v)
+}
+
+/// Lines that lift the unsafe_code lint (`allow`, `expect` or `warn`), by line number.
+fn unsafe_allows(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            l.contains("unsafe_code")
+                && ["allow(", "expect(", "warn("].iter().any(|a| l.contains(a))
+        })
+        .map(|(i, _)| i + 1)
+        .collect()
 }
 
 /// The layer of each workspace crate, from the folder it sits in.
@@ -416,6 +453,13 @@ fn rel(root: &Path, p: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn unsafe_allows_are_found() {
+        let src =
+            "#![allow(unsafe_code)]\nfn f() {}\n#[expect(unsafe_code)]\n// unsafe_code is denied\n";
+        assert_eq!(unsafe_allows(src), [1, 3]);
+    }
     use super::*;
 
     #[test]

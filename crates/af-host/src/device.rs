@@ -27,6 +27,7 @@ pub fn is_block_device(path: &Path) -> bool {
 
 /// A Windows physical drive's size. Seeking to its end doesn't work, so Windows is asked.
 #[cfg(windows)]
+#[allow(unsafe_code)] // one Windows call; `cargo xtask check` keeps such allows in af-host
 pub(crate) fn drive_len(file: &std::fs::File) -> std::io::Result<u64> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::IO::DeviceIoControl;

@@ -25,7 +25,8 @@ af-linux = { path = "os/af-linux" }
 debug = false
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# deny, not forbid: af-host may allow it for OS calls, and `cargo xtask check` keeps it there.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
