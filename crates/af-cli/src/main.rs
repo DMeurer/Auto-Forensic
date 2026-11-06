@@ -59,6 +59,10 @@ enum SourceCommand {
         /// Name a loose file's kind by hand, such as windows.hive.system.
         #[arg(long = "as", value_name = "KIND")]
         as_kind: Option<String>,
+        /// When the evidence was captured, in UTC: "YYYY-MM-DD", "YYYY-MM-DD HH:MM" or
+        /// "YYYY-MM-DD HH:MM:SS". Facts from this source are true as of then.
+        #[arg(long, value_name = "UTC")]
+        as_of: Option<String>,
     },
     /// List the sources with their hashes.
     List { project: PathBuf },
@@ -73,6 +77,37 @@ enum SourceCommand {
         #[arg(long)]
         verify: bool,
     },
+}
+
+/// "YYYY-MM-DD", "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS" in UTC, as seconds since 1970.
+fn parse_utc(text: &str) -> Result<i64, String> {
+    let bad = || format!("{text:?} is not a UTC time like 2026-04-26 10:00:00");
+    let (date, time) = text
+        .trim()
+        .split_once(' ')
+        .unwrap_or((text.trim(), "00:00:00"));
+    let d: Vec<&str> = date.split('-').collect();
+    let mut t: Vec<&str> = time.split(':').collect();
+    if t.len() == 2 {
+        t.push("0");
+    }
+    let (Ok([y, mo, da]), Ok([h, mi, se])) = (
+        <[&str; 3]>::try_from(d.as_slice()),
+        <[&str; 3]>::try_from(t.as_slice()),
+    ) else {
+        return Err(bad());
+    };
+    let num = |s: &str| s.parse::<u32>().map_err(|_| bad());
+    let key = af_core::time::TimeKey::from_utc(
+        y.parse::<i64>().map_err(|_| bad())?,
+        num(mo)?,
+        num(da)?,
+        num(h)?,
+        num(mi)?,
+        num(se)?,
+    )
+    .ok_or_else(bad)?;
+    Ok((key.0 - af_core::time::UNIX_EPOCH_KEY).div_euclid(af_core::time::TICKS_PER_SECOND))
 }
 
 fn source_id(text: &str) -> Result<SourceId, String> {
@@ -152,10 +187,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 project,
                 path,
                 as_kind,
+                as_of,
             } => {
                 let as_kind = as_kind.map(|k| Kind::new(&k)).transpose()?;
+                let as_of = as_of.map(|t| parse_utc(&t)).transpose()?;
                 let mut p = Project::open(&project)?;
                 let s = p.add_source(&path)?;
+                if let Some(t) = as_of {
+                    p.set_as_of(s.id, Some(t), "entered")?;
+                }
+                writeln!(out, "{}", p.as_of(s.id)?.display())?;
                 writeln!(out, "added {} {} {:?}", s.kind, s.id, s.label)?;
                 writeln!(out, "sha256 {}", s.sha256)?;
                 if s.kind == "loose" {
@@ -208,6 +249,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     for a in index.all().filter(|a| a.source == s.id) {
                         writeln!(out, "    kind: {}", a.kind)?;
                     }
+                    writeln!(out, "    {}", p.as_of(s.id)?.display())?;
                 }
             }
             SourceCommand::Remove { project, id } => {

@@ -78,6 +78,28 @@ fn renamed_hives_are_identified() {
             "kind   windows.hive.ntuser"
         ]
     );
+    // An entered capture date shows up; without one it's unknown.
+    let (ok, out, err) = af(&[
+        "source",
+        "add",
+        c,
+        parent.join("file1").to_str().unwrap(),
+        "--as-of",
+        "2026-04-26 10:00",
+    ]);
+    assert!(
+        ok && out.contains("as of 2026-04-26 10:00:00 UTC (entered)"),
+        "{out}{err}"
+    );
+    let (ok, _, err) = af(&[
+        "source",
+        "add",
+        c,
+        parent.join("file1").to_str().unwrap(),
+        "--as-of",
+        "2026-13-01",
+    ]);
+    assert!(!ok && err.contains("not a UTC time"), "{err}");
     // Not a hive: no kind, unless named with --as.
     let notes = parent.join("notes.txt");
     let (_, out, _) = af(&["source", "add", c, notes.to_str().unwrap()]);
@@ -101,17 +123,18 @@ fn renamed_hives_are_identified() {
     ]);
     assert!(!ok && err.contains("namespaced"), "{err}");
     let (_, list, _) = af(&["source", "list", c]);
-    assert_eq!(list.matches("kind: windows.hive.").count(), 3, "{list}");
+    assert_eq!(list.matches("kind: windows.hive.").count(), 4, "{list}");
+    assert!(list.contains("as of unknown"), "{list}");
     // Each import is its own system (F23): three hives give Windows systems, the two text
     // imports (unknown, then --as user.notes) none.
     let (ok, systems, err) = af(&["system", "list", c]);
     assert!(ok, "{err}");
-    assert_eq!(systems.matches(" windows ").count(), 3, "{systems}");
+    assert_eq!(systems.matches(" windows ").count(), 4, "{systems}");
     assert_eq!(systems.matches(" none ").count(), 2, "{systems}");
     // af status lists the artifact kinds and says no plugin ran yet.
     let (ok, status, err) = af(&["status", c]);
     assert!(ok, "{err}");
-    assert!(status.contains("windows.hive.system: 1"), "{status}");
+    assert!(status.contains("windows.hive.system: 2"), "{status}");
     assert!(status.contains("no plugin has run on it yet"), "{status}");
     std::fs::remove_dir_all(&parent).unwrap();
 }

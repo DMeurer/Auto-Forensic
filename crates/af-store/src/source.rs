@@ -23,6 +23,33 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MIB: u64 = 1 << 20;
 const IMAGE_EXTENSIONS: &[&str] = &["e01", "dd", "raw", "img", "001", "vmdk", "vhd", "vhdx"];
 
+/// When a source's evidence was captured, and how that is known (F31). Facts read from a source
+/// are true as of this time, which matters because they have no time of their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsOf {
+    /// Seconds since 1970, UTC; `None` when unknown.
+    pub unix: Option<i64>,
+    /// `acquisition` (from the image's metadata), `last_shutdown` (from the system), `entered`
+    /// (typed in when adding loose files) or `unknown`.
+    pub basis: String,
+}
+
+impl AsOf {
+    pub const BASES: [&str; 4] = ["acquisition", "last_shutdown", "entered", "unknown"];
+
+    /// "as of 2026-04-26 10:00:00 UTC (entered)" or "as of unknown".
+    pub fn display(&self) -> String {
+        match self.unix {
+            Some(t) => format!(
+                "as of {} ({})",
+                af_core::time::Time::from_unix_seconds(t).display(),
+                self.basis
+            ),
+            None => "as of unknown".into(),
+        }
+    }
+}
+
 /// A source as the project lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceInfo {
@@ -79,7 +106,7 @@ impl Project {
             .unwrap_or(0);
         let tx = self.store.conn.transaction()?;
         tx.execute(
-            "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'unknown')",
             duckdb::params![id.0, kind, label, size, sha256, fingerprint, added],
         )?;
         for (seq, (f, s)) in files.iter().zip(&stored).enumerate() {
@@ -98,6 +125,60 @@ impl Project {
             fingerprint,
             files,
         })
+    }
+
+    /// Sets when a source's evidence was captured. `basis` is one of [`AsOf::BASES`].
+    pub fn set_as_of(
+        &mut self,
+        id: SourceId,
+        unix: Option<i64>,
+        basis: &str,
+    ) -> Result<(), ProjectError> {
+        if !AsOf::BASES.contains(&basis) || (unix.is_none() != (basis == "unknown")) {
+            return Err(ProjectError::Mismatch(format!(
+                "an as-of time needs a basis of acquisition, last_shutdown or entered, and \
+                 'unknown' needs no time (got {basis})"
+            )));
+        }
+        let n = self.store.conn.execute(
+            "UPDATE sources SET as_of_unix = ?, as_of_basis = ? WHERE id = ?",
+            duckdb::params![unix, basis, id.0],
+        )?;
+        if n == 0 {
+            return Err(ProjectError::NoSource(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// When a source's evidence was captured.
+    pub fn as_of(&self, id: SourceId) -> Result<AsOf, ProjectError> {
+        self.store
+            .conn
+            .query_row(
+                "SELECT as_of_unix, as_of_basis FROM sources WHERE id = ?",
+                [id.0],
+                |r| {
+                    Ok(AsOf {
+                        unix: r.get(0)?,
+                        basis: r.get(1)?,
+                    })
+                },
+            )
+            .map_err(|e| match e {
+                duckdb::Error::QueryReturnedNoRows => ProjectError::NoSource(id.to_string()),
+                other => ProjectError::Db(other),
+            })
+    }
+
+    /// When a fact is true: the as-of time of the source it was read from.
+    pub fn fact_as_of(&self, fact: u128) -> Result<AsOf, ProjectError> {
+        let source: u128 =
+            self.store
+                .conn
+                .query_row("SELECT source FROM facts WHERE id = ?", [fact], |r| {
+                    r.get(0)
+                })?;
+        self.as_of(SourceId(source))
     }
 
     /// All sources, in the order they were added.
@@ -463,6 +544,37 @@ mod tests {
         );
         assert!(is_image(&root.join("a.VMDK")));
         assert!(!is_image(&root.join("NTUSER.DAT")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_loose_hive_without_a_capture_date_shows_its_facts_as_of_unknown() {
+        let root = scratch("asof");
+        let hive = root.join("SAM");
+        std::fs::write(&hive, b"regf...").unwrap();
+        let mut p = Project::create(&root.join("case"), "case").unwrap();
+        let s = p.add_source(&hive).unwrap();
+        p.store
+            .insert_facts(&[crate::facts::FactRow {
+                id: 77,
+                source: s.id.0,
+                system: 1,
+                kind: "windows.account".into(),
+                subject: "S-1-5-21-1-2-3-1001".into(),
+                attrs: None,
+                created_by: "windows.registry.sam".into(),
+            }])
+            .unwrap();
+        assert_eq!(p.fact_as_of(77).unwrap().display(), "as of unknown");
+        p.set_as_of(s.id, Some(1_777_190_400), "entered").unwrap();
+        assert_eq!(
+            p.fact_as_of(77).unwrap().display(),
+            "as of 2026-04-26 08:00:00 UTC (entered)"
+        );
+        // A time needs a basis, and "unknown" takes no time.
+        assert!(p.set_as_of(s.id, Some(1), "unknown").is_err());
+        assert!(p.set_as_of(s.id, None, "entered").is_err());
+        assert!(p.set_as_of(s.id, Some(1), "guessed").is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

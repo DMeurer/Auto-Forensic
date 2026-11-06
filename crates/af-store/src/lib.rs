@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS sources (
     size UBIGINT NOT NULL,
     sha256 VARCHAR NOT NULL,
     fingerprint VARCHAR NOT NULL,
-    added_unix BIGINT NOT NULL
+    added_unix BIGINT NOT NULL,
+    as_of_unix BIGINT,
+    as_of_basis VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS source_files (
     source UHUGEINT NOT NULL,
