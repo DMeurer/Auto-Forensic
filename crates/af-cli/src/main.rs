@@ -245,6 +245,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(out, "acquired {d} (the imager's local time, zone unknown)")?;
                     }
                 }
+                let (volumes, notes) = p.volumes(s.id)?;
+                for v in &volumes {
+                    writeln!(out, "{}", v.display())?;
+                }
+                for n in &notes {
+                    writeln!(out, "note: {n}")?;
+                }
                 if s.kind == "device" {
                     for (dev, at) in af_host::device::mounted(&s.files[0]) {
                         writeln!(

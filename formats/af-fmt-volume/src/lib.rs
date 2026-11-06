@@ -5,6 +5,8 @@
 //! FAT12, FAT16 and FAT32 are told apart by cluster count, as the FAT specification says, not by
 //! the type string or the partition type, which lie (stage 1 found a "FAT32" card that is FAT16).
 
+pub mod partition;
+
 /// How many bytes [`detect`] wants: up to the ISO 9660 volume descriptor at 32 KiB.
 pub const HEAD_LEN: usize = 32 * 1024 + 2048;
 

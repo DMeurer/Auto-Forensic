@@ -6,6 +6,8 @@
 //!   Records, events and entities carry their `source`, so removing a source removes them.
 //! - `image_checks`: an E01's stored hashes, the recomputed MD5, the verdict and the
 //!   acquisition errors it records, from when it was added (I6).
+//! - `volumes` and `volume_notes`: an image's or device's partitions, gaps or whole-disk volume
+//!   with what each holds, and anything odd about its tables, from when it was added (I7–I11).
 //! - `artifacts`: the artifact index (F21): kind, locator, source, system and hash.
 //! - `systems` and `system_facts`: one system per import and its identifying facts (F23).
 //! - `run_log`: which plugin version extracted which inputs on which system (F24).
@@ -74,6 +76,18 @@ CREATE TABLE IF NOT EXISTS image_checks (
     result VARCHAR NOT NULL,
     acquisition_errors VARCHAR NOT NULL,
     acquired VARCHAR
+);
+CREATE TABLE IF NOT EXISTS volumes (
+    source UHUGEINT NOT NULL,
+    id VARCHAR NOT NULL,
+    start UBIGINT NOT NULL,
+    len UBIGINT NOT NULL,
+    description VARCHAR NOT NULL,
+    content VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS volume_notes (
+    source UHUGEINT NOT NULL,
+    note VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS source_files (
     source UHUGEINT NOT NULL,

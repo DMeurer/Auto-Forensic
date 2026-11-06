@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 af-core.workspace = true
 tempfile = "3.27.0"
+af-fmt-volume.workspace = true
 ewf = "0.4.10"
 sha2 = "0.11.1"
 

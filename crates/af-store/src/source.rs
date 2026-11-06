@@ -149,6 +149,11 @@ impl Project {
         } else {
             None
         };
+        let (volumes, notes) = if kind == "image" || kind == "device" {
+            list_volumes(&files)
+        } else {
+            (vec![], vec![])
+        };
         let added = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -183,6 +188,18 @@ impl Project {
                 ],
             )?;
         }
+        for v in &volumes {
+            tx.execute(
+                "INSERT INTO volumes VALUES (?, ?, ?, ?, ?, ?)",
+                duckdb::params![id.0, v.id, v.start, v.len, v.description, v.content],
+            )?;
+        }
+        for n in &notes {
+            tx.execute(
+                "INSERT INTO volume_notes VALUES (?, ?)",
+                duckdb::params![id.0, n],
+            )?;
+        }
         tx.commit()?;
         Ok(SourceInfo {
             id,
@@ -193,6 +210,32 @@ impl Project {
             fingerprint,
             files,
         })
+    }
+
+    /// The volumes found when the source was added, by start, and the notes on its tables.
+    pub fn volumes(&self, id: SourceId) -> Result<(Vec<VolumeRow>, Vec<String>), ProjectError> {
+        let mut stmt = self.store.conn.prepare(
+            "SELECT id, start, len, description, content FROM volumes WHERE source = ? ORDER BY start, id",
+        )?;
+        let rows = stmt
+            .query_map([id.0], |r| {
+                Ok(VolumeRow {
+                    id: r.get(0)?,
+                    start: r.get(1)?,
+                    len: r.get(2)?,
+                    description: r.get(3)?,
+                    content: r.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut stmt = self
+            .store
+            .conn
+            .prepare("SELECT note FROM volume_notes WHERE source = ?")?;
+        let notes = stmt
+            .query_map([id.0], |r| r.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok((rows, notes))
     }
 
     /// The E01 check made when the source was added, if it is an E01.
@@ -333,6 +376,8 @@ impl Project {
             "systems",
             "source_files",
             "image_checks",
+            "volumes",
+            "volume_notes",
         ] {
             tx.execute(&format!("DELETE FROM {table} WHERE source = ?"), [id.0])?;
         }
@@ -442,6 +487,48 @@ impl ImageCheck {
             format!("acquisition errors at sectors {}", self.acquisition_errors)
         };
         format!("E01 {}: {stored}; {errors}", self.result)
+    }
+}
+
+/// One volume of an image or device, as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeRow {
+    /// `whole`, a partition number (`1`, `1/1` nested), or `gap1`, ...
+    pub id: String,
+    pub start: u64,
+    pub len: u64,
+    pub description: String,
+    pub content: String,
+}
+
+impl VolumeRow {
+    pub fn display(&self) -> String {
+        format!(
+            "volume {}: {} at byte {}, {} bytes ({})",
+            self.id, self.content, self.start, self.len, self.description
+        )
+    }
+}
+
+/// The volumes of an image or device. One that can't be read is still added, with a note.
+fn list_volumes(files: &[PathBuf]) -> (Vec<VolumeRow>, Vec<String>) {
+    let listing = af_host::ewf::open_image(files, af_core::bytes::Locator::default())
+        .and_then(|src| af_host::volumes::list(std::sync::Arc::from(src)));
+    match listing {
+        Ok(l) => (
+            l.volumes
+                .iter()
+                .map(|v| VolumeRow {
+                    id: v.id.clone(),
+                    start: v.start,
+                    len: v.len,
+                    description: v.description.clone(),
+                    content: v.content.name().into(),
+                })
+                .collect(),
+            l.notes,
+        ),
+        Err(e) => (vec![], vec![format!("volumes not listed: {e}")]),
     }
 }
 
@@ -646,6 +733,36 @@ mod tests {
         let c = p.image_check(s.id).unwrap().expect("an E01 gets a check");
         assert_eq!(c.result, "verified", "{c:?}");
         assert_eq!(c.stored_md5.as_deref(), Some(c.computed_md5.as_str()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_image_s_volumes_are_stored_and_removed_with_it() {
+        let root = scratch("volumes");
+        let mut disk = vec![0u8; 64 * 512];
+        disk[446 + 4] = 0x0c; // FAT32, sectors 1..=40
+        disk[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
+        disk[446 + 12..446 + 16].copy_from_slice(&40u32.to_le_bytes());
+        disk[510..512].copy_from_slice(&[0x55, 0xaa]);
+        let img = root.join("disk.dd");
+        std::fs::write(&img, &disk).unwrap();
+        let mut p = Project::create(&root.join("case"), "t").unwrap();
+        let s = p.add_source(&img).unwrap();
+        let (v, notes) = p.volumes(s.id).unwrap();
+        let got: Vec<_> = v
+            .iter()
+            .map(|v| (v.id.as_str(), v.start / 512, v.len / 512))
+            .collect();
+        assert_eq!(got, [("gap1", 0, 1), ("1", 1, 40), ("gap2", 41, 23)]);
+        assert_eq!(v[1].description, "mbr 0x0c FAT32");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(
+            p.status()
+                .unwrap()
+                .contains("volume 1: unknown at byte 512, 20480 bytes")
+        );
+        p.remove_source(s.id).unwrap();
+        assert_eq!(p.volumes(s.id).unwrap(), (vec![], vec![]));
         std::fs::remove_dir_all(&root).unwrap();
     }
     use super::*;

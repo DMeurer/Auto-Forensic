@@ -8,6 +8,7 @@
 //! - [`device`]: block and loop devices as live, unhashed sources (I28).
 //! - [`ewf`]: E01 images through the `ewf` crate, and [`ewf::open_image`] for any image (I5).
 //! - [`raw`]: raw and split raw images read as one stream (I4).
+//! - [`volumes`]: partitions, gaps and partitionless disks as views (I7–I10).
 
 pub mod browser;
 pub mod device;
@@ -15,3 +16,4 @@ pub mod ewf;
 pub mod folder;
 pub mod raw;
 pub mod temp;
+pub mod volumes;

@@ -48,6 +48,7 @@ name = "af-host"
 version = "0.0.0"
 dependencies = [
  "af-core",
+ "af-fmt-volume",
  "ewf",
  "sha2",
  "tempfile",

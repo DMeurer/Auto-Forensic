@@ -90,6 +90,13 @@ impl Project {
             if let Some(c) = self.image_check(s.id)? {
                 let _ = writeln!(out, "    {}", c.display());
             }
+            let (volumes, notes) = self.volumes(s.id)?;
+            for v in &volumes {
+                let _ = writeln!(out, "    {}", v.display());
+            }
+            for n in &notes {
+                let _ = writeln!(out, "    note: {n}");
+            }
         }
         let kinds = index.kinds();
         let _ = writeln!(out, "artifacts: {} kind(s)", kinds.len());
