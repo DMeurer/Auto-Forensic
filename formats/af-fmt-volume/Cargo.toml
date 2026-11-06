@@ -1,0 +1,11 @@
+[package]
+name = "af-fmt-volume"
+description = "What a volume holds, from its first bytes: file system, encryption, or unknown."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

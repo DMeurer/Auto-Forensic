@@ -40,6 +40,10 @@ name = "af-fmt-utmp"
 version = "0.0.0"
 
 [[package]]
+name = "af-fmt-volume"
+version = "0.0.0"
+
+[[package]]
 name = "af-host"
 version = "0.0.0"
 dependencies = [
