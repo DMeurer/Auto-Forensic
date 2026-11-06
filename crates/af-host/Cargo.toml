@@ -11,4 +11,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+af-core.workspace = true
 tempfile = "3.27.0"

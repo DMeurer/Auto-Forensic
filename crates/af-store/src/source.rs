@@ -4,6 +4,9 @@
 //!   referenced where they lie and never written to. A segment set (`x.E01`, `x.E02`, ...) is one
 //!   source; its hash covers the segment files in order (the media hash inside an E01 comes with
 //!   the E01 reader, I5).
+//! - **Folders** are referenced like images (C0a): a hand-built root or an exported profile,
+//!   read in place. Their hash covers every file's path and content, the fingerprint every
+//!   file's path and size.
 //! - **Loose files** (anything else) are copied into `sources/<id>/` inside the project, and the
 //!   copy is checked against the original by hash.
 //!
@@ -73,7 +76,10 @@ impl Project {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (kind, files, stored) = if is_image(&path) {
+        let (kind, files, stored) = if path.is_dir() {
+            let stored = vec![path.to_string_lossy().into_owned()];
+            ("folder", vec![path.clone()], stored)
+        } else if is_image(&path) {
             let files = segments(&path);
             let stored: Vec<String> = files
                 .iter()
@@ -97,9 +103,16 @@ impl Project {
                 vec![rel.to_string_lossy().into_owned()],
             )
         };
-        let size = total_size(&files)?;
-        let sha256 = full_hash(&files)?;
-        let fingerprint = fingerprint(&files)?;
+        let (size, sha256, fingerprint) = if kind == "folder" {
+            let (size, fp, sha) = folder_measure(&path, true)?;
+            (size, sha.expect("asked for the full hash"), fp)
+        } else {
+            (
+                total_size(&files)?,
+                full_hash(&files)?,
+                fingerprint(&files)?,
+            )
+        };
         let added = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -110,9 +123,14 @@ impl Project {
             duckdb::params![id.0, kind, label, size, sha256, fingerprint, added],
         )?;
         for (seq, (f, s)) in files.iter().zip(&stored).enumerate() {
+            let len = if kind == "folder" {
+                size
+            } else {
+                std::fs::metadata(f)?.len()
+            };
             tx.execute(
                 "INSERT INTO source_files VALUES (?, ?, ?, ?)",
-                duckdb::params![id.0, seq as i32, s, std::fs::metadata(f)?.len()],
+                duckdb::params![id.0, seq as i32, s, len],
             )?;
         }
         tx.commit()?;
@@ -268,20 +286,34 @@ impl Project {
         verify: bool,
     ) -> Result<SourceInfo, ProjectError> {
         let s = self.source(id)?;
-        if s.kind != "image" {
+        if s.kind == "loose" {
             return Err(ProjectError::Mismatch(
-                "only images are referenced; a loose file's copy lives in the project".into(),
+                "only images and folders are referenced; a loose file's copy lives in the project"
+                    .into(),
             ));
         }
         let new_path = std::fs::canonicalize(new_path)?;
-        let files = segments(&new_path);
-        if total_size(&files)? != s.size || fingerprint(&files)? != s.fingerprint {
+        let (files, size, fp, full) = if s.kind == "folder" {
+            let (size, fp, sha) = folder_measure(&new_path, verify)?;
+            (vec![new_path.clone()], size, fp, sha)
+        } else {
+            let files = segments(&new_path);
+            let full = if verify {
+                Some(full_hash(&files)?)
+            } else {
+                None
+            };
+            let (size, fp) = (total_size(&files)?, fingerprint(&files)?);
+            (files, size, fp, full)
+        };
+        if size != s.size || fp != s.fingerprint {
             return Err(ProjectError::Mismatch(format!(
-                "{} is not the same image (size or fingerprint differs)",
-                new_path.display()
+                "{} is not the same {} (size or fingerprint differs)",
+                new_path.display(),
+                s.kind
             )));
         }
-        if verify && full_hash(&files)? != s.sha256 {
+        if full.is_some_and(|h| h != s.sha256) {
             return Err(ProjectError::Mismatch(format!(
                 "{} has another SHA-256",
                 new_path.display()
@@ -290,14 +322,14 @@ impl Project {
         let tx = self.store.conn.transaction()?;
         tx.execute("DELETE FROM source_files WHERE source = ?", [id.0])?;
         for (seq, f) in files.iter().enumerate() {
+            let len = if s.kind == "folder" {
+                size
+            } else {
+                std::fs::metadata(f)?.len()
+            };
             tx.execute(
                 "INSERT INTO source_files VALUES (?, ?, ?, ?)",
-                duckdb::params![
-                    id.0,
-                    seq as i32,
-                    f.to_string_lossy().into_owned(),
-                    std::fs::metadata(f)?.len()
-                ],
+                duckdb::params![id.0, seq as i32, f.to_string_lossy().into_owned(), len],
             )?;
         }
         tx.commit()?;
@@ -336,6 +368,36 @@ fn segments(path: &Path) -> Vec<PathBuf> {
         out.push(next);
     }
     out
+}
+
+/// A folder's total size, its fingerprint (SHA-256 over every file's path and size) and, with
+/// `full`, its hash (SHA-256 over every file's path and content hash). Paths are taken below the
+/// folder, in their escaped form, so the folder can move.
+fn folder_measure(dir: &Path, full: bool) -> std::io::Result<(u64, String, Option<String>)> {
+    let vol = af_host::folder::FolderVolume::new(af_core::system::VolumeId(0), dir);
+    let style = af_core::path::PathStyle {
+        separator: '/',
+        case: af_core::path::CasePolicy::Exact,
+    };
+    let (mut fp, mut sha) = (Sha256::new(), Sha256::new());
+    let mut size = 0u64;
+    for f in vol.files()? {
+        let rel = f.path.display(style);
+        size += f.size;
+        fp.update((rel.len() as u64).to_le_bytes());
+        fp.update(rel.as_bytes());
+        fp.update(f.size.to_le_bytes());
+        if full {
+            sha.update((rel.len() as u64).to_le_bytes());
+            sha.update(rel.as_bytes());
+            sha.update(full_hash(std::slice::from_ref(&f.on_disk))?.as_bytes());
+        }
+    }
+    Ok((
+        size,
+        hex(&fp.finalize()),
+        full.then(|| hex(&sha.finalize())),
+    ))
 }
 
 fn total_size(files: &[PathBuf]) -> std::io::Result<u64> {
@@ -575,6 +637,34 @@ mod tests {
         assert!(p.set_as_of(s.id, Some(1), "unknown").is_err());
         assert!(p.set_as_of(s.id, None, "entered").is_err());
         assert!(p.set_as_of(s.id, Some(1), "guessed").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_folder_is_referenced_hashed_and_relinked() {
+        let root = scratch("folder");
+        let linux = root.join("linux-root");
+        for (p, data) in [
+            ("etc/hostname", &b"logserver\n"[..]),
+            ("var/log/wtmp", &[0u8; 384][..]),
+        ] {
+            std::fs::create_dir_all(linux.join(p).parent().unwrap()).unwrap();
+            std::fs::write(linux.join(p), data).unwrap();
+        }
+        let mut p = Project::create(&root.join("case"), "case").unwrap();
+        let s = p.add_source(&linux).unwrap();
+        assert_eq!(s.kind, "folder");
+        assert_eq!(s.size, 10 + 384);
+        assert!(!root.join("case/sources").exists(), "folders aren't copied");
+        // Moved: relinks; with one file changed: refused.
+        let moved = root.join("moved-root");
+        std::fs::rename(&linux, &moved).unwrap();
+        assert!(p.relink_source(s.id, &moved, true).is_ok());
+        std::fs::write(moved.join("etc/hostname"), b"otherhost\n").unwrap();
+        assert!(
+            p.relink_source(s.id, &moved, true).is_err(),
+            "same size, other content"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -164,3 +164,28 @@ fn reading_waits_for_a_writing_run() {
     assert!(out.contains("sources: 0"), "{out}");
     std::fs::remove_dir_all(&parent).unwrap();
 }
+
+/// C0a: a folder is added in place, listed, and gets a system of its own.
+#[test]
+fn a_folder_is_added_in_place() {
+    let parent = std::env::temp_dir().join(format!("af-cli-folder-{}", std::process::id()));
+    let root = parent.join("linux-root");
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(root.join("etc/hostname"), b"logserver\n").unwrap();
+    let case = parent.join("case");
+    let c = case.to_str().unwrap();
+    assert!(af(&["project", "new", c]).0);
+    let (ok, out, err) = af(&["source", "add", c, root.to_str().unwrap()]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("added folder") && out.contains("system "),
+        "{out}"
+    );
+    assert!(!case.join("sources").exists(), "a folder isn't copied");
+    let (_, list, _) = af(&["source", "list", c]);
+    assert!(
+        list.contains(" folder ") && list.contains("linux-root"),
+        "{list}"
+    );
+    std::fs::remove_dir_all(&parent).unwrap();
+}

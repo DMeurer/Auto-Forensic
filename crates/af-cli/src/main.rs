@@ -240,6 +240,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     };
                     let sys = p.add_system(s.id, &family, None, &[])?;
                     writeln!(out, "system {sys} ({})", family.as_str())?;
+                } else if s.kind == "folder" {
+                    // Profiles detect what the folder holds once runs read it (C1); until then
+                    // it is a system of its own with no known family.
+                    let sys = p.add_system(s.id, &Family::None, Some(&s.label), &[])?;
+                    writeln!(out, "system {sys} (none)")?;
                 }
             }
             SourceCommand::List { project } => {
