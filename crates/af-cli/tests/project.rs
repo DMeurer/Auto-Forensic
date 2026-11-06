@@ -102,5 +102,11 @@ fn renamed_hives_are_identified() {
     assert!(!ok && err.contains("namespaced"), "{err}");
     let (_, list, _) = af(&["source", "list", c]);
     assert_eq!(list.matches("kind: windows.hive.").count(), 3, "{list}");
+    // Each import is its own system (F23): three hives give Windows systems, the two text
+    // imports (unknown, then --as user.notes) none.
+    let (ok, systems, err) = af(&["system", "list", c]);
+    assert!(ok, "{err}");
+    assert_eq!(systems.matches(" windows ").count(), 3, "{systems}");
+    assert_eq!(systems.matches(" none ").count(), 2, "{systems}");
     std::fs::remove_dir_all(&parent).unwrap();
 }

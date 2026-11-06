@@ -10,7 +10,7 @@
 //! Adding stores the SHA-256 of every byte and a quick fingerprint: SHA-256 over the size and
 //! the first, middle and last MiB. Relinking a moved image checks the fingerprint (seconds), or
 //! with `verify` the full hash (minutes). Removing a source deletes its records, events,
-//! entities and artifacts, and a loose file's copy; an image itself is never touched.
+//! entities, artifacts and systems, and a loose file's copy; an image itself is never touched.
 
 use crate::project::{Project, ProjectError};
 use af_core::ids::SourceId;
@@ -148,7 +148,18 @@ impl Project {
     pub fn remove_source(&mut self, id: SourceId) -> Result<(), ProjectError> {
         let s = self.source(id)?;
         let tx = self.store.conn.transaction()?;
-        for table in ["events", "records", "entities", "artifacts", "source_files"] {
+        tx.execute(
+            "DELETE FROM system_facts WHERE system IN (SELECT id FROM systems WHERE source = ?)",
+            [id.0],
+        )?;
+        for table in [
+            "events",
+            "records",
+            "entities",
+            "artifacts",
+            "systems",
+            "source_files",
+        ] {
             tx.execute(&format!("DELETE FROM {table} WHERE source = ?"), [id.0])?;
         }
         tx.execute("DELETE FROM sources WHERE id = ?", [id.0])?;

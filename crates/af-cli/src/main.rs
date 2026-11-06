@@ -5,6 +5,7 @@ use af_core::bytes::Locator;
 use af_core::ids::SourceId;
 use af_core::names::Kind;
 use af_core::runner::Plugin;
+use af_core::system::Family;
 use af_core::time::Time;
 use af_store::project::Project;
 use clap::{Parser, Subcommand};
@@ -35,6 +36,15 @@ enum Command {
     /// Add, list, remove and relink a project's sources.
     #[command(subcommand)]
     Source(SourceCommand),
+    /// List a project's systems and merge suggestions.
+    #[command(subcommand)]
+    System(SystemCommand),
+}
+
+#[derive(Subcommand)]
+enum SystemCommand {
+    /// Every system, one per import, and pairs that may be the same machine.
+    List { project: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -115,6 +125,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(out, "by af:    {}", info.created_by_version)?;
             writeln!(out, "plugins:  {} compiled in", PLUGINS.len())?;
         }
+        Command::System(SystemCommand::List { project }) => {
+            let p = Project::open(&project)?;
+            for s in p.systems()? {
+                let label = s.label.as_deref().unwrap_or("-");
+                writeln!(out, "{} {:8} {label} (source {})", s.id, s.family, s.source)?;
+                for (k, v) in &s.facts {
+                    writeln!(out, "    {k}: {v}")?;
+                }
+            }
+            for m in p.merge_suggestions()? {
+                writeln!(
+                    out,
+                    "maybe the same machine: {} and {} ({})",
+                    m.a, m.b, m.reason
+                )?;
+            }
+        }
         Command::Source(cmd) => match cmd {
             SourceCommand::Add {
                 project,
@@ -132,7 +159,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         Some(k) => Some(k),
                         None => af_windows::loose::detect(&std::fs::read(&s.files[0])?),
                     };
-                    match kind {
+                    match &kind {
                         Some(kind) => {
                             let mut index = p.store.artifacts()?;
                             index.add(Artifact {
@@ -147,6 +174,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         None => writeln!(out, "kind   unknown; name it with --as KIND")?,
                     }
+                    // Each import is its own system (F23); merging is the analyst's call.
+                    let family = match &kind {
+                        Some(k) if k.namespace() == "windows" => Family::Windows,
+                        _ => Family::None,
+                    };
+                    let sys = p.add_system(s.id, &family, None, &[])?;
+                    writeln!(out, "system {sys} ({})", family.as_str())?;
                 }
             }
             SourceCommand::List { project } => {

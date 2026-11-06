@@ -5,6 +5,7 @@
 //! - `sources` and `source_files`: what was added, with hashes and where its files are (F20).
 //!   Records, events and entities carry their `source`, so removing a source removes them.
 //! - `artifacts`: the artifact index (F21): kind, locator, source, system and hash.
+//! - `systems` and `system_facts`: one system per import and its identifying facts (F23).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -27,6 +28,7 @@ use std::path::Path;
 
 pub mod project;
 pub mod source;
+pub mod system;
 
 pub use duckdb::Error;
 
@@ -52,6 +54,17 @@ CREATE TABLE IF NOT EXISTS source_files (
     seq INTEGER NOT NULL,
     path VARCHAR NOT NULL,
     size UBIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS systems (
+    id UHUGEINT NOT NULL,
+    source UHUGEINT NOT NULL,
+    family VARCHAR NOT NULL,
+    label VARCHAR
+);
+CREATE TABLE IF NOT EXISTS system_facts (
+    system UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    value VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     kind VARCHAR NOT NULL,
