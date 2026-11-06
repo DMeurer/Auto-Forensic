@@ -39,6 +39,8 @@ enum Command {
     /// List a project's systems and merge suggestions.
     #[command(subcommand)]
     System(SystemCommand),
+    /// What was read, what's missing, and why.
+    Status { project: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -124,6 +126,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             writeln!(out, "by af:    {}", info.created_by_version)?;
             writeln!(out, "plugins:  {} compiled in", PLUGINS.len())?;
+        }
+        Command::Status { project } => {
+            write!(out, "{}", Project::open(&project)?.status()?)?;
         }
         Command::System(SystemCommand::List { project }) => {
             let p = Project::open(&project)?;

@@ -8,6 +8,7 @@
 //! - `systems` and `system_facts`: one system per import and its identifying facts (F23).
 //! - `run_log`: which plugin version extracted which inputs on which system (F24).
 //! - `tags`: the analyst's tags on events, groups, facts or files; they survive re-runs (F25).
+//! - `outcomes`: each plugin's last outcome per system, for `af status` (F26).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -32,6 +33,7 @@ use std::path::Path;
 pub mod project;
 pub mod rebuild;
 pub mod source;
+pub mod status;
 pub mod system;
 
 pub use duckdb::Error;
@@ -84,6 +86,14 @@ CREATE TABLE IF NOT EXISTS tags (
     target_file_value BLOB,
     tag VARCHAR NOT NULL,
     created_by VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outcomes (
+    plugin VARCHAR NOT NULL,
+    version UINTEGER NOT NULL,
+    system UHUGEINT NOT NULL,
+    outcome VARCHAR NOT NULL,
+    count UBIGINT,
+    detail VARCHAR
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     kind VARCHAR NOT NULL,

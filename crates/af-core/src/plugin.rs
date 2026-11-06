@@ -94,6 +94,20 @@ impl Outcome {
         }
     }
 
+    /// What the outcome means, in words for `af status`.
+    pub fn meaning(&self) -> String {
+        match self {
+            Self::Ok(0) => "present, nothing relevant".into(),
+            Self::Ok(n) => format!("read, {n} items"),
+            Self::NotAcquired => "not in this project".into(),
+            Self::NotPresent => "searched, not there".into(),
+            Self::UnsupportedSchema(d) => format!("there, but a version it can't read ({d})"),
+            Self::Locked => "there, but encrypted or locked".into(),
+            Self::Inert => "there, but switched off on that system".into(),
+            Self::Failed(d) => format!("failed: {d}"),
+        }
+    }
+
     /// Whether the input was there to be read (the plugin saw it, whatever came of it).
     pub fn input_was_there(&self) -> bool {
         matches!(

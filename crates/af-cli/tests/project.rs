@@ -108,5 +108,10 @@ fn renamed_hives_are_identified() {
     assert!(ok, "{err}");
     assert_eq!(systems.matches(" windows ").count(), 3, "{systems}");
     assert_eq!(systems.matches(" none ").count(), 2, "{systems}");
+    // af status lists the artifact kinds and says no plugin ran yet.
+    let (ok, status, err) = af(&["status", c]);
+    assert!(ok, "{err}");
+    assert!(status.contains("windows.hive.system: 1"), "{status}");
+    assert!(status.contains("no plugin has run on it yet"), "{status}");
     std::fs::remove_dir_all(&parent).unwrap();
 }
