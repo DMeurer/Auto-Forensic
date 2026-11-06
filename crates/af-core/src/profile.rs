@@ -8,9 +8,9 @@
 use crate::capability::Capabilities;
 use crate::ids::SystemId;
 use crate::names::Kind;
-use crate::path::{CasePolicy, PathStyle};
+use crate::path::{CasePolicy, PathStyle, ViewPath};
 use crate::system::{
-    Detected, Detector, Family, Mount, System, View, ViewId, VolumeProbe, detect_systems,
+    Detected, Detector, Family, Mount, System, View, ViewId, VolumeId, VolumeProbe, detect_systems,
     to_systems,
 };
 
@@ -36,6 +36,16 @@ pub trait OsProfile: Detector {
         volumes: &[&dyn VolumeProbe],
         new_id: &mut dyn FnMut() -> ViewId,
     ) -> Vec<View>;
+
+    /// Artifacts this profile knows by path on the system's volumes: which file is which kind
+    /// (a Linux `/var/log/wtmp`, a Windows `config/SYSTEM`). Plugins then ask by kind (F21).
+    fn index(
+        &self,
+        _system: &System,
+        _volumes: &[&dyn VolumeProbe],
+    ) -> Vec<(VolumeId, ViewPath, Kind)> {
+        Vec::new()
+    }
 
     /// The identity of a system this profile detected, using what `caps` offers.
     fn identity(

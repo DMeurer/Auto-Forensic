@@ -407,7 +407,7 @@ fn total_size(files: &[PathBuf]) -> std::io::Result<u64> {
         .sum()
 }
 
-fn full_hash(files: &[PathBuf]) -> std::io::Result<String> {
+pub(crate) fn full_hash(files: &[PathBuf]) -> std::io::Result<String> {
     let mut h = Sha256::new();
     let mut buf = vec![0u8; MIB as usize];
     for f in files {

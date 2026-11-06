@@ -1,13 +1,17 @@
 //! Windows plugins.
 //!
-//! [`HiveRootKeys`] (piece C0c) is the first: every hive's root keys as facts. It stands in for
-//! the registry plugins in the canaries until those exist, using only the root-key reader.
+//! [`HiveRootKeys`] (piece C0c) is the first: every hive's root keys as facts, and the root
+//! key's last-written time as an event. It stands in for the registry plugins in the canaries
+//! until those exist, using only the root-key reader.
 
-use af_core::ids::FactId;
+use af_core::ids::{EventId, FactId};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
+use af_core::runner::NewEvent;
 use af_core::runner::{NewFact, Plugin, RunContext};
 use af_core::system::Family;
+use af_core::time::Time;
+use af_core::timeline::{ClockDomainId, TimeMeaning};
 use std::sync::OnceLock;
 
 /// The hive kinds it reads; all optional, so it runs on whatever hives a system has.
@@ -41,7 +45,10 @@ impl Plugin for HiveRootKeys {
                 })
                 .collect(),
             needs: vec![],
-            produces: vec![Kind::new("windows.hive.root_key").expect("valid kind")],
+            produces: vec![
+                Kind::new("windows.hive.root_key").expect("valid kind"),
+                Kind::new("windows.hive.root_written").expect("valid kind"),
+            ],
         })
     }
 
@@ -63,6 +70,32 @@ impl Plugin for HiveRootKeys {
             let mut data = vec![0; src.len() as usize];
             if let Err(e) = src.read_exact_at(0, &mut data) {
                 return Outcome::Failed(format!("{}: {e}", a.locator));
+            }
+            if let Ok(ticks) = af_fmt_regf::root_last_written(&data) {
+                let kind = Kind::new("windows.hive.root_written").expect("valid kind");
+                let meaning = TimeMeaning::new("registry.key.last_written").expect("valid meaning");
+                ctx.sink.event(
+                    &self.manifest().id,
+                    ctx.system.id,
+                    NewEvent {
+                        id: EventId::derive(
+                            &a.source.to_string(),
+                            &a.locator,
+                            None,
+                            &kind,
+                            &meaning,
+                            0,
+                        ),
+                        source: a.source,
+                        record: FactId::derive(&a.source.to_string(), &a.locator, &kind, "root").0,
+                        kind,
+                        meaning,
+                        time: Time::from_ticks_1601(ticks),
+                        clock: ClockDomainId("wall".into()),
+                        seq: None,
+                    },
+                );
+                n += 1;
             }
             let names = match af_fmt_regf::root_subkey_names(&data) {
                 Ok(n) => n,
@@ -118,6 +151,9 @@ mod tests {
         fn fact(&mut self, _: &Kind, _: SystemId, f: NewFact) {
             self.0.push(f.subject);
         }
+        fn event(&mut self, _: &Kind, _: SystemId, e: af_core::runner::NewEvent) {
+            self.0.push(format!("event {}", e.kind));
+        }
     }
 
     #[test]
@@ -166,12 +202,14 @@ mod tests {
         assert_eq!(
             sink.0,
             [
+                "event windows.hive.root_written",
+                "event windows.hive.root_written",
                 "windows.hive.ntuser:Control Panel",
                 "windows.hive.ntuser:Software",
                 "windows.hive.system:MountedDevices",
                 "windows.hive.system:Select",
             ]
         );
-        assert_eq!(log.all()[0].outcome, Outcome::Ok(4));
+        assert_eq!(log.all()[0].outcome, Outcome::Ok(6));
     }
 }

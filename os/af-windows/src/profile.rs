@@ -12,10 +12,11 @@
 use crate::registry::computer_name;
 use af_core::capability::Capabilities;
 use af_core::names::Kind;
+use af_core::path::ViewPath;
 use af_core::path::{CasePolicy, PathStyle};
 use af_core::profile::{Identity, OsProfile, system_volumes};
 use af_core::system::{
-    Detected, Detector, Family, MemVolume, Mount, System, View, ViewId, VolumeProbe,
+    Detected, Detector, Family, MemVolume, Mount, System, View, ViewId, VolumeId, VolumeProbe,
 };
 
 /// The file whose presence marks a Windows system volume.
@@ -70,6 +71,33 @@ impl OsProfile for WindowsProfile {
             },
             mounts,
         }]
+    }
+
+    /// The config hives on the system volume.
+    fn index(
+        &self,
+        system: &System,
+        volumes: &[&dyn VolumeProbe],
+    ) -> Vec<(VolumeId, ViewPath, Kind)> {
+        let Some(vol) = system_volumes(system, volumes).into_iter().next() else {
+            return Vec::new();
+        };
+        [
+            ("SYSTEM", "windows.hive.system"),
+            ("SOFTWARE", "windows.hive.software"),
+            ("SAM", "windows.hive.sam"),
+            ("SECURITY", "windows.hive.security"),
+        ]
+        .into_iter()
+        .map(|(file, kind)| {
+            (
+                MemVolume::path(&format!("Windows/System32/config/{file}")),
+                kind,
+            )
+        })
+        .filter(|(p, _)| vol.exists(p))
+        .map(|(p, kind)| (vol.id(), p, Kind::new(kind).expect("valid kind")))
+        .collect()
     }
 
     fn identity(

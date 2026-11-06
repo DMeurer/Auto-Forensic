@@ -103,6 +103,11 @@ pub trait VolumeProbe {
     fn case(&self) -> CasePolicy {
         CasePolicy::Exact
     }
+    /// A small file's content, for profiles that read names and settings while detecting
+    /// (`/etc/hostname`). `None` if absent or the volume can't be read this way.
+    fn read(&self, _path: &ViewPath) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// An in-memory volume that only knows which paths exist, for tests and fixtures. Paths are
@@ -111,6 +116,8 @@ pub trait VolumeProbe {
 pub struct MemVolume {
     pub id: VolumeId,
     pub paths: Vec<String>,
+    /// Content for [`VolumeProbe::read`], by path.
+    pub contents: Vec<(String, Vec<u8>)>,
     pub label: Option<String>,
     pub case: CasePolicy,
 }
@@ -121,6 +128,7 @@ impl MemVolume {
         Self {
             id: VolumeId(id),
             paths: paths.iter().map(|p| p.to_string()).collect(),
+            contents: Vec::new(),
             label: None,
             case: CasePolicy::Insensitive,
         }
@@ -128,6 +136,13 @@ impl MemVolume {
 
     pub fn with_label(mut self, label: &str) -> Self {
         self.label = Some(label.to_string());
+        self
+    }
+
+    /// Adds a file with content (and its path).
+    pub fn with_file(mut self, path: &str, data: &[u8]) -> Self {
+        self.paths.push(path.to_string());
+        self.contents.push((path.to_string(), data.to_vec()));
         self
     }
 
@@ -162,6 +177,13 @@ impl VolumeProbe for MemVolume {
     }
     fn case(&self) -> CasePolicy {
         self.case
+    }
+    fn read(&self, path: &ViewPath) -> Option<Vec<u8>> {
+        let want = path.key(self.case);
+        self.contents
+            .iter()
+            .find(|(p, _)| Self::path(p).key(self.case) == want)
+            .map(|(_, d)| d.clone())
     }
 }
 

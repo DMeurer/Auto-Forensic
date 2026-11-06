@@ -35,6 +35,56 @@ pub struct MergeSuggestion {
 }
 
 impl Project {
+    /// Detects the systems in a folder source with `profiles` (C1), records each as a system of
+    /// that source with its identity, and adds the artifacts each profile knows by path to the
+    /// artifact index. A folder nothing claims becomes one `none` system.
+    pub fn add_folder_systems(
+        &mut self,
+        source: &crate::source::SourceInfo,
+        profiles: &[&dyn af_core::profile::OsProfile],
+    ) -> Result<Vec<SystemId>, ProjectError> {
+        use af_core::artifact::Artifact;
+        use af_core::bytes::Locator;
+        use af_core::system::{ViewId, VolumeId, VolumeProbe};
+        let vol = af_host::folder::FolderVolume::new(VolumeId(source.id.0), &source.files[0]);
+        let vols: [&dyn VolumeProbe; 1] = [&vol];
+        let (systems, identities) = af_core::profile::build_systems(
+            &vols,
+            profiles,
+            &af_core::capability::Capabilities::default(),
+            SystemId::new_random,
+            ViewId::new_random,
+        );
+        let mut index = self.store.artifacts()?;
+        let mut ids = Vec::new();
+        for (sys, identity) in systems.iter().zip(&identities) {
+            let id = self.add_system(
+                source.id,
+                &sys.family,
+                sys.label.as_deref().or(Some(&source.label)),
+                &identity.facts,
+            )?;
+            if let Some(profile) = af_core::profile::profile_for(&sys.family, profiles) {
+                for (_, path, kind) in profile.index(sys, &vols) {
+                    let Some(on_disk) = vol.on_disk(&path) else {
+                        continue;
+                    };
+                    index.add(Artifact {
+                        kind,
+                        locator: Locator::root("source.folder", &source.id.to_string())
+                            .child("fs.path", &crate::run::folder_locator_path(&path)),
+                        source: source.id,
+                        system: Some(id),
+                        sha256: crate::source::full_hash(&[on_disk])?,
+                    });
+                }
+            }
+            ids.push(id);
+        }
+        self.store.save_artifacts(&index)?;
+        Ok(ids)
+    }
+
     /// Records a new system for an import, with its identity facts. Always a new system, even
     /// if an existing one looks the same.
     pub fn add_system(

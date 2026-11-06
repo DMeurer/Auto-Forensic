@@ -136,16 +136,17 @@ fn renamed_hives_are_identified() {
     assert!(ok, "{err}");
     assert!(status.contains("windows.hive.system: 2"), "{status}");
     assert!(status.contains("no plugin has run on it yet"), "{status}");
-    // C0c: af run reads the hives' root keys into facts.
+    // C0c: af run reads the hives' root keys into facts, plus one last-written event per hive
+    // (SYSTEM: 4 + 1, SOFTWARE: 5 + 1).
     let (ok, out, err) = af(&["run", c]);
     assert!(ok, "{err}{out}");
     let (_, status, _) = af(&["status", c]);
     assert!(
-        status.contains("windows.hive.root_keys v1: read, 4 items"),
+        status.contains("windows.hive.root_keys v1: read, 5 items"),
         "{status}"
     );
     assert!(
-        status.contains("windows.hive.root_keys v1: read, 5 items"),
+        status.contains("windows.hive.root_keys v1: read, 6 items"),
         "{status}"
     );
     // A second run extracts nothing.
@@ -197,6 +198,12 @@ fn a_folder_is_added_in_place() {
         "{out}"
     );
     assert!(!case.join("sources").exists(), "a folder isn't copied");
+    // Nothing claims a lone hostname file: one `none` system, named after the folder.
+    let (_, systems, _) = af(&["system", "list", c]);
+    assert!(
+        systems.contains(" none ") && systems.contains("linux-root"),
+        "{systems}"
+    );
     // af run works on any project, even with no plugin compiled in yet.
     let (ok, out, err) = af(&["run", c]);
     assert!(ok, "{err}");

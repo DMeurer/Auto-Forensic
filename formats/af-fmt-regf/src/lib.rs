@@ -45,6 +45,20 @@ pub fn is_regf(data: &[u8]) -> bool {
     data.starts_with(b"regf")
 }
 
+/// The root key's last-written time: 100 ns ticks since 1601, as stored at 0x04 of its cell.
+pub fn root_last_written(data: &[u8]) -> Result<u64, RegfError> {
+    if !is_regf(data) {
+        return Err(RegfError::NotRegf);
+    }
+    let nk = cell(data, u32_at(data, 0x24, "root cell offset")?, "root key")?;
+    if nk.get(..2) != Some(b"nk") {
+        return Err(RegfError::BadCell("root key"));
+    }
+    nk.get(0x04..0x0C)
+        .map(|b| u64::from_le_bytes(b.try_into().expect("eight bytes")))
+        .ok_or(RegfError::OutOfBounds("root key time"))
+}
+
 /// The names of the root key's subkeys, in list order.
 pub fn root_subkey_names(data: &[u8]) -> Result<Vec<String>, RegfError> {
     if !is_regf(data) {
@@ -213,6 +227,17 @@ mod tests {
             let hive = build_test_hive(&names, list);
             assert_eq!(root_subkey_names(&hive).unwrap(), names, "{list}");
         }
+    }
+
+    #[test]
+    fn root_last_written_reads_the_root_cell() {
+        let mut hive = build_test_hive(&["A"], "lf");
+        assert_eq!(root_last_written(&hive), Ok(0));
+        let root = u32::from_le_bytes(hive[0x24..0x28].try_into().unwrap()) as usize;
+        let at = BINS + root + 4 + 0x04;
+        hive[at..at + 8].copy_from_slice(&134_064_720_000_000_000u64.to_le_bytes());
+        assert_eq!(root_last_written(&hive), Ok(134_064_720_000_000_000));
+        assert_eq!(root_last_written(b"nope"), Err(RegfError::NotRegf));
     }
 
     #[test]

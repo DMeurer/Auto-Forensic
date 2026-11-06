@@ -4,6 +4,7 @@ use af_core::artifact::Artifact;
 use af_core::bytes::Locator;
 use af_core::ids::SourceId;
 use af_core::names::Kind;
+use af_core::profile::{NoneProfile, OsProfile};
 use af_core::runner::Plugin;
 use af_core::system::Family;
 use af_core::time::Time;
@@ -16,6 +17,10 @@ use std::process::ExitCode;
 /// Every compiled-in plugin, in the order the runner calls them within a phase. Adding a plugin
 /// is one line here (the Linux canary, C2, checks that nothing else in core has to change).
 const PLUGINS: &[&dyn Plugin] = &[&af_windows::plugins::HiveRootKeys];
+
+/// Every compiled-in OS profile; adding one is one line here (the canary counts it with the
+/// plugin line). `none` goes last: it claims what nothing else does.
+const PROFILES: &[&dyn OsProfile] = &[&af_windows::WindowsProfile, &NoneProfile];
 
 #[derive(Parser)]
 #[command(
@@ -254,10 +259,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     writeln!(out, "system {sys} ({})", family.as_str())?;
                 } else if s.kind == "folder" {
-                    // Profiles detect what the folder holds once runs read it (C1); until then
-                    // it is a system of its own with no known family.
-                    let sys = p.add_system(s.id, &Family::None, Some(&s.label), &[])?;
-                    writeln!(out, "system {sys} (none)")?;
+                    for sys in p.add_folder_systems(&s, PROFILES)? {
+                        writeln!(out, "system {sys}")?;
+                    }
                 }
             }
             SourceCommand::List { project } => {

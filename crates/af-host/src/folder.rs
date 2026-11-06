@@ -94,6 +94,9 @@ impl VolumeProbe for FolderVolume {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
     }
+    fn read(&self, path: &ViewPath) -> Option<Vec<u8>> {
+        self.on_disk(path).and_then(|p| std::fs::read(p).ok())
+    }
     fn case(&self) -> CasePolicy {
         if cfg!(any(windows, target_os = "macos")) {
             CasePolicy::Insensitive
