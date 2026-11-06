@@ -6,6 +6,7 @@
 //!   Records, events and entities carry their `source`, so removing a source removes them.
 //! - `artifacts`: the artifact index (F21): kind, locator, source, system and hash.
 //! - `systems` and `system_facts`: one system per import and its identifying facts (F23).
+//! - `run_log`: which plugin version extracted which inputs on which system (F24).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -22,6 +23,7 @@ use af_core::artifact::{Artifact, ArtifactIndex};
 use af_core::bytes::Locator;
 use af_core::ids::{SourceId, SystemId};
 use af_core::names::Kind;
+use af_core::runner::RunLog;
 use af_core::time::TimeColumns;
 use duckdb::{Connection, params};
 use std::path::Path;
@@ -65,6 +67,12 @@ CREATE TABLE IF NOT EXISTS system_facts (
     system UHUGEINT NOT NULL,
     kind VARCHAR NOT NULL,
     value VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_log (
+    plugin VARCHAR NOT NULL,
+    system UHUGEINT NOT NULL,
+    version UINTEGER NOT NULL,
+    inputs VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     kind VARCHAR NOT NULL,
@@ -311,6 +319,41 @@ impl Store {
         Ok(index)
     }
 
+    /// Replaces the stored run log with `runs`.
+    pub fn save_run_log(&mut self, runs: &RunLog) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch("DELETE FROM run_log;")?;
+        for (plugin, system, version, inputs) in runs.entries() {
+            tx.execute(
+                "INSERT INTO run_log VALUES (?, ?, ?, ?)",
+                params![plugin.as_str(), system.0, version, inputs],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// The stored run log. Rows with a plugin ID that isn't a valid kind are skipped.
+    pub fn run_log(&self) -> Result<RunLog, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT plugin, system, version, inputs FROM run_log")?;
+        let mut runs = RunLog::new();
+        for row in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u128>(1)?,
+                r.get::<_, u32>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })? {
+            let (plugin, system, version, inputs) = row?;
+            if let Ok(plugin) = Kind::new(&plugin) {
+                runs.record(plugin, version, SystemId(system), inputs);
+            }
+        }
+        Ok(runs)
+    }
+
     /// All events, ordered by ID.
     pub fn events(&self) -> Result<Vec<EventRow>, Error> {
         let mut stmt = self.conn.prepare(
@@ -540,6 +583,18 @@ mod tests {
         );
         let kind = Kind::new("windows.hive.system").unwrap();
         assert_eq!(back.observations(&kind).len(), 1);
+    }
+
+    #[test]
+    fn run_log_round_trips() {
+        let mut store = Store::in_memory(256).unwrap();
+        let mut runs = RunLog::new();
+        let plugin = Kind::new("windows.registry.computer_name").unwrap();
+        runs.record(plugin.clone(), 3, SystemId(u128::MAX), "abc".into());
+        store.save_run_log(&runs).unwrap();
+        let back = store.run_log().unwrap();
+        assert_eq!(back, runs);
+        assert!(back.is_current(&plugin, 3, SystemId(u128::MAX), "abc"));
     }
 
     #[test]

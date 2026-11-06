@@ -14,11 +14,19 @@
 //! capability is missing. A plugin that panics is recorded as `failed` and the run goes on.
 //! Each plugin's phases on one system end in one outcome: the first outcome that isn't `ok`
 //! (later phases of that plugin are then skipped on that system), or `ok` with the counts added.
+//!
+//! **Run log (F24).** Extraction is the slow part, so the runner skips Extract when the
+//! [`RunLog`] says this plugin version already extracted these inputs on this system: same
+//! version and the same input fingerprint (SHA-256 over each input kind's artifact hashes). The
+//! earlier outcome then stays. Index and Correlate always run, because links and groups are
+//! rebuilt every run (F25). A failed extraction isn't logged, so it is tried again.
 
 use crate::capability::Capabilities;
+use crate::ids::SystemId;
 use crate::names::Kind;
 use crate::plugin::{Manifest, Outcome, OutcomeLog, OutcomeRecord, Phase};
 use crate::system::System;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -60,18 +68,70 @@ pub struct Target<'a> {
     pub system: &'a System,
     pub caps: Capabilities<'a>,
     pub available: BTreeSet<Kind>,
+    /// Per artifact kind, a hash of what this system has of it (such as the sorted artifact
+    /// hashes joined). A kind not listed counts as absent.
+    pub input_hashes: BTreeMap<Kind, String>,
+}
+
+/// Which plugin version last extracted which inputs on which system.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunLog {
+    done: BTreeMap<(Kind, SystemId), (u32, String)>,
+}
+
+impl RunLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether this version already extracted inputs with this fingerprint on this system.
+    pub fn is_current(&self, plugin: &Kind, version: u32, system: SystemId, inputs: &str) -> bool {
+        self.done
+            .get(&(plugin.clone(), system))
+            .is_some_and(|(v, i)| *v == version && i == inputs)
+    }
+
+    pub fn record(&mut self, plugin: Kind, version: u32, system: SystemId, inputs: String) {
+        self.done.insert((plugin, system), (version, inputs));
+    }
+
+    /// Every entry: plugin, system, version and input fingerprint.
+    pub fn entries(&self) -> impl Iterator<Item = (&Kind, SystemId, u32, &str)> {
+        self.done
+            .iter()
+            .map(|((p, s), (v, i))| (p, *s, *v, i.as_str()))
+    }
+}
+
+/// The fingerprint of a plugin's inputs on a target: SHA-256 over each declared input kind and
+/// its hash, in manifest order, length-prefixed.
+pub fn input_fingerprint(m: &Manifest, t: &Target<'_>) -> String {
+    let mut h = Sha256::new();
+    for input in &m.inputs {
+        for part in [
+            input.kind.as_str(),
+            t.input_hashes.get(&input.kind).map_or("", String::as_str),
+        ] {
+            h.update((part.len() as u64).to_le_bytes());
+            h.update(part.as_bytes());
+        }
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Runs `plugins` on `targets` through the three phases and records one outcome per plugin and
-/// system in `log`.
+/// system in `log`. `runs` says what was already extracted and is updated.
 pub fn run(
     plugins: &[&dyn Plugin],
     targets: &[Target<'_>],
     sink: &mut dyn Sink,
     log: &mut OutcomeLog,
+    runs: &mut RunLog,
 ) {
     // Outcomes so far, by (plugin index, target index).
     let mut results: BTreeMap<(usize, usize), Outcome> = BTreeMap::new();
+    // Extractions skipped because the run log is current.
+    let mut skipped: BTreeSet<(usize, usize)> = BTreeSet::new();
 
     for (ti, t) in targets.iter().enumerate() {
         for (pi, p) in plugins.iter().enumerate() {
@@ -97,6 +157,13 @@ pub fn run(
                 {
                     continue;
                 }
+                let fingerprint = input_fingerprint(m, t);
+                if phase == Phase::Extract
+                    && runs.is_current(&m.id, m.version, t.system.id, &fingerprint)
+                {
+                    skipped.insert((pi, ti));
+                    continue;
+                }
                 let mut ctx = RunContext {
                     system: t.system,
                     caps: t.caps,
@@ -109,6 +176,9 @@ pub fn run(
                     Phase::Correlate => p.correlate(&mut ctx),
                 }))
                 .unwrap_or_else(|e| Outcome::Failed(panic_text(e.as_ref(), phase)));
+                if phase == Phase::Extract && matches!(outcome, Outcome::Ok(_)) {
+                    runs.record(m.id.clone(), m.version, t.system.id, fingerprint);
+                }
                 let merged = match (results.remove(&(pi, ti)), outcome) {
                     (Some(Outcome::Ok(a)), Outcome::Ok(b)) => Outcome::Ok(a + b),
                     (_, other) => other,
@@ -120,10 +190,18 @@ pub fn run(
 
     for ((pi, ti), outcome) in results {
         let m = plugins[pi].manifest();
+        let system = targets[ti].system.id;
+        // A skipped extraction keeps the outcome of the run that did it.
+        if skipped.contains(&(pi, ti))
+            && matches!(outcome, Outcome::Ok(_))
+            && log.get(&m.id, system).is_some()
+        {
+            continue;
+        }
         log.record(OutcomeRecord {
             plugin: m.id.clone(),
             version: m.version,
-            system: targets[ti].system.id,
+            system,
             outcome,
         });
     }
@@ -244,6 +322,10 @@ mod tests {
             system: s,
             caps: Capabilities::default(),
             available: available.iter().map(|a| k(a)).collect(),
+            input_hashes: available
+                .iter()
+                .map(|a| (k(a), format!("hash of {a}")))
+                .collect(),
         }
     }
 
@@ -253,7 +335,13 @@ mod tests {
         let s = system(1, Family::Windows);
         let mut sink = Trace::default();
         let mut log = OutcomeLog::new();
-        run(&[&p], &[target(&s, &[])], &mut sink, &mut log);
+        run(
+            &[&p],
+            &[target(&s, &[])],
+            &mut sink,
+            &mut log,
+            &mut RunLog::new(),
+        );
         assert_eq!(
             *p.calls.lock().unwrap(),
             ["Index 1", "Extract 1", "Correlate 1"]
@@ -277,6 +365,7 @@ mod tests {
             &[target(&s1, &[]), target(&s2, &[])],
             &mut sink,
             &mut log,
+            &mut RunLog::new(),
         );
         let phases: Vec<&str> = sink
             .0
@@ -302,6 +391,7 @@ mod tests {
             &[target(&stick, &[])],
             &mut sink,
             &mut log,
+            &mut RunLog::new(),
         );
         // Not for this family: not run, nothing recorded.
         assert!(win_only.calls.lock().unwrap().is_empty());
@@ -328,7 +418,13 @@ mod tests {
         // Silence the panic message in test output.
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        run(&[&broken, &fine], &[target(&s, &[])], &mut sink, &mut log);
+        run(
+            &[&broken, &fine],
+            &[target(&s, &[])],
+            &mut sink,
+            &mut log,
+            &mut RunLog::new(),
+        );
         std::panic::set_hook(hook);
         let o = &log.get(&k("test.broken"), SystemId(1)).unwrap().outcome;
         assert_eq!(
@@ -339,6 +435,101 @@ mod tests {
         assert_eq!(*broken.calls.lock().unwrap(), ["Index 1"]);
         assert_eq!(
             log.get(&k("test.fine"), SystemId(1)).unwrap().outcome,
+            Outcome::Ok(3)
+        );
+    }
+
+    fn extracts(p: &TestPlugin) -> usize {
+        p.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.starts_with("Extract"))
+            .count()
+    }
+
+    #[test]
+    fn a_second_run_extracts_nothing() {
+        let p = TestPlugin::new("test.hive", vec![], &["windows.hive.system"], &[]);
+        let s = system(1, Family::Windows);
+        let mut sink = Trace::default();
+        let mut log = OutcomeLog::new();
+        let mut runs = RunLog::new();
+        let t = target(&s, &["windows.hive.system"]);
+        run(
+            &[&p],
+            std::slice::from_ref(&t),
+            &mut sink,
+            &mut log,
+            &mut runs,
+        );
+        assert_eq!(extracts(&p), 1);
+        assert_eq!(
+            log.get(&k("test.hive"), SystemId(1)).unwrap().outcome,
+            Outcome::Ok(3)
+        );
+        run(&[&p], &[t], &mut sink, &mut log, &mut runs);
+        assert_eq!(extracts(&p), 1, "nothing changed, nothing extracted");
+        assert_eq!(
+            log.get(&k("test.hive"), SystemId(1)).unwrap().outcome,
+            Outcome::Ok(3),
+            "the earlier outcome stays"
+        );
+        // Index and correlate ran both times.
+        assert_eq!(p.calls.lock().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn a_new_version_or_new_input_extracts_again() {
+        let mut p = TestPlugin::new("test.hive", vec![], &["windows.hive.system"], &[]);
+        let s = system(1, Family::Windows);
+        let mut sink = Trace::default();
+        let mut log = OutcomeLog::new();
+        let mut runs = RunLog::new();
+        run(
+            &[&p],
+            &[target(&s, &["windows.hive.system"])],
+            &mut sink,
+            &mut log,
+            &mut runs,
+        );
+        // Another hive arrived: its hash changes the fingerprint.
+        let mut t = target(&s, &["windows.hive.system"]);
+        t.input_hashes
+            .insert(k("windows.hive.system"), "two hives now".into());
+        run(&[&p], &[t], &mut sink, &mut log, &mut runs);
+        assert_eq!(extracts(&p), 2);
+        // A new plugin version extracts again.
+        p.manifest.version = 2;
+        run(
+            &[&p],
+            &[target(&s, &["windows.hive.system"])],
+            &mut sink,
+            &mut log,
+            &mut runs,
+        );
+        assert_eq!(extracts(&p), 3);
+        assert_eq!(runs.entries().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_extraction_is_tried_again() {
+        let mut p = TestPlugin::new("test.flaky", vec![], &[], &[]);
+        p.panic_in = Some(Phase::Extract);
+        let s = system(1, Family::Windows);
+        let mut sink = Trace::default();
+        let mut log = OutcomeLog::new();
+        let mut runs = RunLog::new();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        run(&[&p], &[target(&s, &[])], &mut sink, &mut log, &mut runs);
+        std::panic::set_hook(hook);
+        assert_eq!(runs.entries().count(), 0, "failures aren't logged");
+        p.panic_in = None;
+        run(&[&p], &[target(&s, &[])], &mut sink, &mut log, &mut runs);
+        assert_eq!(extracts(&p), 1);
+        assert_eq!(
+            log.get(&k("test.flaky"), SystemId(1)).unwrap().outcome,
             Outcome::Ok(3)
         );
     }
