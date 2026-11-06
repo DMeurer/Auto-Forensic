@@ -4,10 +4,10 @@
 //! key's last-written time as an event. It stands in for the registry plugins in the canaries
 //! until those exist, using only the root-key reader.
 
-use af_core::ids::{EventId, FactId};
+use af_core::ids::{Endpoint, EventId, FactId};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::NewEvent;
+use af_core::runner::{NewEvent, NewLink};
 use af_core::runner::{NewFact, Plugin, RunContext};
 use af_core::system::Family;
 use af_core::time::Time;
@@ -36,7 +36,7 @@ impl Plugin for HiveRootKeys {
             id: Kind::new("windows.hive.root_keys").expect("valid kind"),
             version: 1,
             applies_to: vec![Family::Windows],
-            phases: vec![Phase::Extract],
+            phases: vec![Phase::Extract, Phase::Correlate],
             inputs: HIVES
                 .iter()
                 .map(|k| Input {
@@ -48,6 +48,7 @@ impl Plugin for HiveRootKeys {
             produces: vec![
                 Kind::new("windows.hive.root_key").expect("valid kind"),
                 Kind::new("windows.hive.root_written").expect("valid kind"),
+                Kind::new("windows.hive.root_key_of").expect("valid kind"),
             ],
         })
     }
@@ -112,6 +113,53 @@ impl Plugin for HiveRootKeys {
                         kind: fact_kind.clone(),
                         subject,
                         attrs: None,
+                    },
+                );
+                n += 1;
+            }
+        }
+        Outcome::Ok(n)
+    }
+
+    /// Links each root-key fact to its hive's last-written event. Links are made here, not in
+    /// Extract: derived links are rebuilt every run (F25), while Extract is skipped for
+    /// unchanged inputs (F24).
+    fn correlate(&self, ctx: &mut RunContext<'_>) -> Outcome {
+        let Some(opener) = ctx.opener else {
+            return Outcome::Ok(0);
+        };
+        let fact_kind = Kind::new("windows.hive.root_key").expect("valid kind");
+        let ev_kind = Kind::new("windows.hive.root_written").expect("valid kind");
+        let meaning = TimeMeaning::new("registry.key.last_written").expect("valid meaning");
+        let link_kind = Kind::new("windows.hive.root_key_of").expect("valid kind");
+        let mut n = 0;
+        for a in ctx
+            .artifacts
+            .iter()
+            .filter(|a| HIVES.contains(&a.kind.as_str()))
+        {
+            let Ok(src) = opener.open(a) else { continue };
+            let mut data = vec![0; src.len() as usize];
+            if src.read_exact_at(0, &mut data).is_err()
+                || af_fmt_regf::root_last_written(&data).is_err()
+            {
+                continue;
+            }
+            let Ok(names) = af_fmt_regf::root_subkey_names(&data) else {
+                continue;
+            };
+            let source = a.source.to_string();
+            let event = EventId::derive(&source, &a.locator, None, &ev_kind, &meaning, 0);
+            for name in names {
+                let subject = format!("{}:{name}", a.kind);
+                let fact = FactId::derive(&source, &a.locator, &fact_kind, &subject);
+                ctx.sink.link(
+                    &self.manifest().id,
+                    NewLink {
+                        id: FactId::derive(&source, &a.locator, &link_kind, &subject).0,
+                        kind: link_kind.clone(),
+                        from: Endpoint::Fact(fact),
+                        to: Endpoint::Event(event),
                     },
                 );
                 n += 1;
@@ -211,6 +259,9 @@ mod tests {
         fn event(&mut self, _: &Kind, _: SystemId, e: af_core::runner::NewEvent) {
             self.0.push(format!("event {}", e.kind));
         }
+        fn link(&mut self, _: &Kind, l: af_core::runner::NewLink) {
+            self.0.push(format!("link {}", l.kind));
+        }
     }
 
     #[test]
@@ -261,12 +312,16 @@ mod tests {
             [
                 "event windows.hive.root_written",
                 "event windows.hive.root_written",
+                "link windows.hive.root_key_of",
+                "link windows.hive.root_key_of",
+                "link windows.hive.root_key_of",
+                "link windows.hive.root_key_of",
                 "windows.hive.ntuser:Control Panel",
                 "windows.hive.ntuser:Software",
                 "windows.hive.system:MountedDevices",
                 "windows.hive.system:Select",
             ]
         );
-        assert_eq!(log.all()[0].outcome, Outcome::Ok(6));
+        assert_eq!(log.all()[0].outcome, Outcome::Ok(10));
     }
 }
