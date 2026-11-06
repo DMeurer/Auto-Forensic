@@ -4,6 +4,7 @@
 //! - `project`: one row, the project's name, creation time and creating af version (F19).
 //! - `sources` and `source_files`: what was added, with hashes and where its files are (F20).
 //!   Records, events and entities carry their `source`, so removing a source removes them.
+//! - `artifacts`: the artifact index (F21): kind, locator, source, system and hash.
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -16,6 +17,10 @@
 //!
 //! [`Endpoint`]: af_core::ids::Endpoint
 
+use af_core::artifact::{Artifact, ArtifactIndex};
+use af_core::bytes::Locator;
+use af_core::ids::{SourceId, SystemId};
+use af_core::names::Kind;
 use af_core::time::TimeColumns;
 use duckdb::{Connection, params};
 use std::path::Path;
@@ -47,6 +52,13 @@ CREATE TABLE IF NOT EXISTS source_files (
     seq INTEGER NOT NULL,
     path VARCHAR NOT NULL,
     size UBIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifacts (
+    kind VARCHAR NOT NULL,
+    locator VARCHAR NOT NULL,
+    source UHUGEINT NOT NULL,
+    system UHUGEINT,
+    sha256 VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS records (
     id UHUGEINT NOT NULL,
@@ -234,6 +246,56 @@ impl Store {
             self.conn.execute_batch(&format!("DETACH spool{i};"))?;
         }
         result
+    }
+
+    /// Replaces the stored artifact index with `index`.
+    pub fn save_artifacts(&mut self, index: &ArtifactIndex) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch("DELETE FROM artifacts;")?;
+        {
+            let mut app = tx.appender("artifacts")?;
+            for a in index.all() {
+                app.append_row(params![
+                    a.kind.as_str(),
+                    a.locator.to_string(),
+                    a.source.0,
+                    a.system.map(|s| s.0),
+                    a.sha256,
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// The stored artifact index. Rows that don't read back as a kind and a locator are skipped,
+    /// because this code never writes them.
+    pub fn artifacts(&self) -> Result<ArtifactIndex, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, locator, source, system, sha256 FROM artifacts")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, u128>(2)?,
+                r.get::<_, Option<u128>>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut index = ArtifactIndex::new();
+        for row in rows {
+            let (kind, locator, source, system, sha256) = row?;
+            if let (Ok(kind), Some(locator)) = (Kind::new(&kind), Locator::parse(&locator)) {
+                index.add(Artifact {
+                    kind,
+                    locator,
+                    source: SourceId(source),
+                    system: system.map(SystemId),
+                    sha256,
+                });
+            }
+        }
+        Ok(index)
     }
 
     /// All events, ordered by ID.
@@ -434,6 +496,37 @@ mod tests {
         assert!(physically_sorted(&project));
         drop(project);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn artifact_index_round_trips() {
+        let mut store = Store::in_memory(256).unwrap();
+        let mut idx = ArtifactIndex::new();
+        for (source, loc, sha) in [
+            (
+                1u128,
+                Locator::root("source.image", "exam.E01")
+                    .child("fs.path", "Windows/System32/config/SYSTEM"),
+                "aa",
+            ),
+            (2, Locator::root("source.loose", "SYSTEM"), "aa"),
+        ] {
+            idx.add(Artifact {
+                kind: Kind::new("windows.hive.system").unwrap(),
+                locator: loc,
+                source: SourceId(source),
+                system: (source == 1).then_some(SystemId(u128::MAX)),
+                sha256: sha.into(),
+            });
+        }
+        store.save_artifacts(&idx).unwrap();
+        let back = store.artifacts().unwrap();
+        assert_eq!(
+            back.all().collect::<Vec<_>>(),
+            idx.all().collect::<Vec<_>>()
+        );
+        let kind = Kind::new("windows.hive.system").unwrap();
+        assert_eq!(back.observations(&kind).len(), 1);
     }
 
     #[test]

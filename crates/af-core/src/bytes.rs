@@ -55,6 +55,23 @@ impl LocatorStep {
     }
 }
 
+impl Locator {
+    /// Back from the text form [`Display`](fmt::Display) writes. `None` if it isn't one.
+    pub fn parse(text: &str) -> Option<Self> {
+        let steps = text
+            .split('/')
+            .map(|step| {
+                let (kind, id) = step.split_once(':')?;
+                Some(LocatorStep {
+                    kind: Kind::new(kind).ok()?,
+                    id: id.replace("%2F", "/").replace("%25", "%"),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self(steps))
+    }
+}
+
 impl fmt::Display for Locator {
     /// `kind:id` steps joined by `/`. A `/` or `%` inside an ID is written as `%2F` or `%25`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -546,5 +563,10 @@ mod tests {
             "source.folder:%2Fhome%2Fdon%2Fcase/fs.file:50%25%2Fx"
         );
         assert_eq!(l.steps().len(), 2);
+        assert_eq!(Locator::parse(&l.to_string()), Some(l));
+        // `%2F` written as text inside an ID survives: its `%` is escaped first.
+        let tricky = Locator::root("fs.path", "a%2Fb:c");
+        assert_eq!(Locator::parse(&tricky.to_string()), Some(tricky));
+        assert_eq!(Locator::parse("no-colon"), None);
     }
 }
