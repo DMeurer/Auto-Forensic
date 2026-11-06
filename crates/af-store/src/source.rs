@@ -160,6 +160,7 @@ impl Project {
             "events",
             "records",
             "entities",
+            "facts",
             "artifacts",
             "systems",
             "source_files",

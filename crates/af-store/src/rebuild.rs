@@ -1,7 +1,7 @@
 //! What a re-run replaces and what it keeps (piece F25).
 //!
 //! Everything a plugin made is rebuilt: before a plugin extracts again on a system, its earlier
-//! records, events and entities there go ([`Store::clear_plugin_output`]); before correlation,
+//! records, events, entities and facts there go ([`Store::clear_plugin_output`]); before correlation,
 //! every derived link goes ([`Store::clear_derived_links`]). What the analyst made stays: links,
 //! tags (and later groups and lists) with `created_by = 'user'`. Because event IDs are stable
 //! (F18), a tag or a user link on an event still points at the same event after the re-run.
@@ -22,7 +22,7 @@ impl Store {
             "DELETE FROM events WHERE created_by = ? AND system = ?",
             params![plugin, system],
         )?;
-        for table in ["records", "entities"] {
+        for table in ["records", "entities", "facts"] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE created_by = ? AND system = ?"),
                 params![plugin, system],

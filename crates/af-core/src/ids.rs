@@ -106,6 +106,36 @@ opaque_id!(
     SourceId
 );
 
+impl FactId {
+    /// The stable ID of a fact: the first 128 bits of SHA-256 over its source ID, its locator,
+    /// its kind and its subject (what the fact is about, such as a SID, a device serial or an
+    /// interface GUID), length-prefixed with a version tag. A re-run gives the same ID.
+    pub fn derive(source: &str, locator: &Locator, kind: &Kind, subject: &str) -> Self {
+        Self(stable_u128(
+            b"af.fact.v1",
+            &[
+                source.as_bytes(),
+                locator.to_string().as_bytes(),
+                kind.as_str().as_bytes(),
+                subject.as_bytes(),
+            ],
+        ))
+    }
+}
+
+/// First 128 bits of SHA-256 over a tag and length-prefixed fields.
+fn stable_u128(tag: &[u8], fields: &[&[u8]]) -> u128 {
+    let mut h = Sha256::new();
+    for f in std::iter::once(tag).chain(fields.iter().copied()) {
+        h.update((f.len() as u64).to_le_bytes());
+        h.update(f);
+    }
+    let digest = h.finalize();
+    let mut first = [0u8; 16];
+    first.copy_from_slice(&digest[..16]);
+    u128::from_be_bytes(first)
+}
+
 impl SourceId {
     pub fn new_random() -> Self {
         Self(uuid::Uuid::new_v4().as_u128())
@@ -331,5 +361,32 @@ mod tests {
             0,
         );
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fact_ids_are_stable_and_depend_on_every_field() {
+        let loc = Locator::root("source.loose", "SAM");
+        let sid = |subject: &str| {
+            FactId::derive(
+                "source-1",
+                &loc,
+                &Kind::new("windows.account").unwrap(),
+                subject,
+            )
+        };
+        let a = sid("S-1-5-21-1-2-3-1001");
+        assert_eq!(a, sid("S-1-5-21-1-2-3-1001"));
+        assert_ne!(a, sid("S-1-5-21-1-2-3-1002"));
+        assert_ne!(
+            a,
+            FactId::derive(
+                "source-2",
+                &loc,
+                &Kind::new("windows.account").unwrap(),
+                "S-1-5-21-1-2-3-1001"
+            )
+        );
+        // Facts and events never share an ID space by accident: different version tags.
+        assert_ne!(a.0, derive(None, 0).0);
     }
 }

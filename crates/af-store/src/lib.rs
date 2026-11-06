@@ -11,6 +11,7 @@
 //! - `outcomes`: each plugin's last outcome per system, for `af status` (F26).
 //! - `groups` and `group_members`: groups with a reason and a range from their members (F27).
 //! - `lists` and `list_entries`: named timeline lists of event and group references (F28).
+//! - `facts`: data without a time of its own, with stable IDs (F30).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -32,6 +33,7 @@ use af_core::time::TimeColumns;
 use duckdb::{Connection, params};
 use std::path::Path;
 
+pub mod facts;
 pub mod groups;
 pub mod lists;
 pub mod project;
@@ -125,6 +127,15 @@ CREATE TABLE IF NOT EXISTS list_entries (
     member_id UHUGEINT NOT NULL,
     created_by VARCHAR NOT NULL,
     added_unix BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS facts (
+    id UHUGEINT NOT NULL,
+    source UHUGEINT NOT NULL,
+    system UHUGEINT NOT NULL,
+    kind VARCHAR NOT NULL,
+    subject VARCHAR NOT NULL,
+    attrs VARCHAR,
+    created_by VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     kind VARCHAR NOT NULL,
