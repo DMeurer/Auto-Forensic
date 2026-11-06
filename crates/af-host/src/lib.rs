@@ -5,7 +5,9 @@
 //!   ends, with leftovers of crashed runs cleared on the next start.
 //! - [`browser`]: opening a URL in the default browser, without a shell.
 //! - [`folder`]: a folder on this machine read in place as evidence (C0a).
+//! - [`raw`]: raw and split raw images read as one stream (I4).
 
 pub mod browser;
 pub mod folder;
+pub mod raw;
 pub mod temp;

@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MIB: u64 = 1 << 20;
-const IMAGE_EXTENSIONS: &[&str] = &["e01", "dd", "raw", "img", "001", "vmdk", "vhd", "vhdx"];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "e01", "dd", "raw", "img", "000", "001", "vmdk", "vhd", "vhdx",
+];
 
 /// When a source's evidence was captured, and how that is known (F31). Facts read from a source
 /// are true as of this time, which matters because they have no time of their own.
