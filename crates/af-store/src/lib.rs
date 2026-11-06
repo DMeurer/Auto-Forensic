@@ -10,6 +10,7 @@
 //! - `tags`: the analyst's tags on events, groups, facts or files; they survive re-runs (F25).
 //! - `outcomes`: each plugin's last outcome per system, for `af status` (F26).
 //! - `groups` and `group_members`: groups with a reason and a range from their members (F27).
+//! - `lists` and `list_entries`: named timeline lists of event and group references (F28).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -32,6 +33,7 @@ use duckdb::{Connection, params};
 use std::path::Path;
 
 pub mod groups;
+pub mod lists;
 pub mod project;
 pub mod rebuild;
 pub mod source;
@@ -110,6 +112,19 @@ CREATE TABLE IF NOT EXISTS group_members (
     member_kind VARCHAR NOT NULL,
     member_id UHUGEINT NOT NULL,
     created_by VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lists (
+    id UHUGEINT NOT NULL,
+    name VARCHAR NOT NULL,
+    created_by VARCHAR NOT NULL,
+    created_unix BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS list_entries (
+    list UHUGEINT NOT NULL,
+    member_kind VARCHAR NOT NULL,
+    member_id UHUGEINT NOT NULL,
+    created_by VARCHAR NOT NULL,
+    added_unix BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     kind VARCHAR NOT NULL,
