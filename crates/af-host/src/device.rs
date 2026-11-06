@@ -4,18 +4,53 @@
 
 use std::path::Path;
 
-/// Whether `path` is a block device (`/dev/sdb`, `/dev/loop0`). Always false off Unix.
+/// Whether `path` is a block device: `/dev/sdb` or `/dev/loop0` on Unix, `\\.\PhysicalDrive1`
+/// on Windows.
 pub fn is_block_device(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
         std::fs::metadata(path).is_ok_and(|m| m.file_type().is_block_device())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let p = path.to_string_lossy().to_ascii_lowercase();
+        p.strip_prefix(r"\\.\physicaldrive")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         false
     }
+}
+
+/// A Windows physical drive's size. Seeking to its end doesn't work, so Windows is asked.
+#[cfg(windows)]
+pub(crate) fn drive_len(file: &std::fs::File) -> std::io::Result<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::{GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO};
+    let mut info = GET_LENGTH_INFORMATION { Length: 0 };
+    let mut got = 0u32;
+    // SAFETY: the handle is open for the call's duration, and the out buffer is a live
+    // GET_LENGTH_INFORMATION whose size is passed with it.
+    let ok = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            IOCTL_DISK_GET_LENGTH_INFO,
+            std::ptr::null(),
+            0,
+            (&raw mut info).cast(),
+            size_of::<GET_LENGTH_INFORMATION>() as u32,
+            &mut got,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    u64::try_from(info.Length).map_err(|_| std::io::Error::other("negative drive length"))
 }
 
 /// The mounts of `dev` or its partitions (`sdb1`, `loop0p1`, `nvme0n1p2`), as

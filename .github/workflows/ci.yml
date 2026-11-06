@@ -41,6 +41,22 @@ jobs:
           set +e  # GitHub runs bash with -eo pipefail, which would stop before the annotations
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee lint.log
           s=${PIPESTATUS[0]}; [ $s -eq 0 ] || echo "::error::$(sed 's/\x1b\[[0-9;]*m//g' lint.log | grep -v '^ *Compiling\|^ *Checking\|^ *Download' | tail -40 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"; exit $s
+      # The physical drive check (I29): a small fixed VHD with random data, attached read-only,
+      # must read through af like the data written into it. Runners are administrators.
+      - name: Attach a test disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vhd = "$env:RUNNER_TEMP\af-test.vhd"; $raw = "$env:RUNNER_TEMP\af-test.raw"
+          "create vdisk file=`"$vhd`" maximum=8 type=fixed" | Out-File -Encoding ascii "$env:RUNNER_TEMP\dp.txt"
+          diskpart /s "$env:RUNNER_TEMP\dp.txt"
+          $b = New-Object byte[] (8MB); (New-Object Random 42).NextBytes($b); [IO.File]::WriteAllBytes($raw, $b)
+          # A fixed VHD is the disk's bytes followed by a 512-byte footer.
+          $fs = [IO.File]::OpenWrite($vhd); $fs.Write($b, 0, $b.Length); $fs.Close()
+          Mount-DiskImage -ImagePath $vhd -Access ReadOnly -NoDriveLetter | Out-Null
+          $n = (Get-DiskImage -ImagePath $vhd | Get-Disk).Number
+          Add-Content $env:GITHUB_ENV "AF_TEST_DEVICE=\\.\PhysicalDrive$n"
+          Add-Content $env:GITHUB_ENV "AF_TEST_IMAGE=$raw"
       - name: Test
         shell: bash
         run: |

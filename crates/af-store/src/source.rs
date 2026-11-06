@@ -117,11 +117,15 @@ impl Project {
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::PermissionDenied => std::io::Error::new(
                         e.kind(),
-                        format!(
-                            "{}: reading a device needs root or the disk group, or read access just for it (`sudo setfacl -m u:$USER:r {}`)",
-                            path.display(),
-                            path.display()
-                        ),
+                        if cfg!(windows) {
+                            format!("{}: reading a physical drive needs af run as administrator", path.display())
+                        } else {
+                            format!(
+                                "{}: reading a device needs root or the disk group, or read access just for it (`sudo setfacl -m u:$USER:r {}`)",
+                                path.display(),
+                                path.display()
+                            )
+                        },
                     ),
                     _ => e,
                 })?;

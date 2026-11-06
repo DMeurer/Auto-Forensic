@@ -46,6 +46,7 @@ dependencies = [
  "af-core",
  "sha2",
  "tempfile",
+ "windows-sys",
 ]
 
 [[package]]

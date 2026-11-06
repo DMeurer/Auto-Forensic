@@ -12,6 +12,9 @@ pub struct RawImage {
     segments: Vec<(u64, Mutex<File>)>,
     len: u64,
     locator: Locator,
+    /// Reads go in whole blocks of this size: 1 for files, 4096 for Windows physical drives,
+    /// which take only sector-aligned reads (4096 covers 512- and 4096-byte sectors).
+    align: u64,
 }
 
 impl RawImage {
@@ -24,9 +27,19 @@ impl RawImage {
         }
         let mut segments = Vec::with_capacity(files.len());
         let mut len = 0u64;
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut align = 1;
         for f in files {
             let mut file = File::open(f)?;
+            #[cfg(windows)]
+            let n = if crate::device::is_block_device(f) {
+                align = 4096;
+                crate::device::drive_len(&file)?
+            } else {
+                file.seek(SeekFrom::End(0))?
+            };
             // Block devices report 0 in their metadata; the end offset works for both.
+            #[cfg(not(windows))]
             let n = file.seek(SeekFrom::End(0))?;
             segments.push((len, Mutex::new(file)));
             len += n;
@@ -35,6 +48,7 @@ impl RawImage {
             segments,
             len,
             locator,
+            align,
         })
     }
 }
@@ -58,8 +72,20 @@ impl ByteSource for RawImage {
         let mut f = file
             .lock()
             .map_err(|_| io::Error::other("file lock poisoned"))?;
-        f.seek(SeekFrom::Start(offset - start))?;
-        f.read(&mut buf[..want])
+        if self.align == 1 {
+            f.seek(SeekFrom::Start(offset - start))?;
+            return f.read(&mut buf[..want]);
+        }
+        // shortcut: a fresh bounce buffer per read; reuse one if device reads show up in profiles.
+        let a = self.align;
+        let base = (offset - start) / a * a;
+        let skip = (offset - start - base) as usize;
+        let mut tmp = vec![0u8; (skip + want).div_ceil(a as usize) * a as usize];
+        f.seek(SeekFrom::Start(base))?;
+        let got = f.read(&mut tmp)?;
+        let n = got.saturating_sub(skip).min(want);
+        buf[..n].copy_from_slice(&tmp[skip..skip + n]);
+        Ok(n)
     }
 
     fn locator(&self) -> &Locator {
@@ -120,6 +146,13 @@ mod tests {
             "stops at the segment end"
         );
         assert_eq!(img.read_at(1000, &mut b).unwrap(), 0);
+
+        // Aligned reads, as Windows physical drives need, give the same bytes.
+        let mut img = RawImage::open(&files[2..], Locator::root("source.image", "x")).unwrap();
+        img.align = 64;
+        for step in [1, 7, 63, 64, 65, 4096] {
+            assert_eq!(read_all(&img, step), data[301..], "aligned, step {step}");
+        }
     }
 
     /// The dfVFS split raw sample reads the same as its unsplit original, by the pinned hash.
