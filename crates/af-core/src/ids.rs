@@ -5,12 +5,16 @@
 //! - [`FileId`]: an opaque file identity within one system, with a namespaced scheme saying what
 //!   the bytes are (an NTFS file reference, an inode number, a FAT directory entry position).
 //!   Core never looks inside; the format and OS crates build and read them.
-//! - [`EventId`], [`GroupId`], [`FactId`]: opaque 128-bit IDs, unique within a project. How they
-//!   are derived (stable, from source, locator, offset and kind) is piece F18.
+//! - [`EventId`], [`GroupId`], [`FactId`]: opaque 128-bit IDs, unique within a project. Event IDs
+//!   are stable (F18): [`EventId::derive`] hashes where the event came from, so a re-run gives
+//!   the same IDs and tags and links on them survive.
 //! - [`Endpoint`]: what a link points at: an event, group, fact or file. A link may join two
 //!   systems, for example a host's LNK file and the file on the stick it points to.
 
+use crate::bytes::Locator;
 use crate::names::Kind;
+use crate::timeline::TimeMeaning;
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// The ID of a system: a random UUID.
@@ -53,6 +57,41 @@ opaque_id!(
     /// The ID of an event, unique within a project.
     EventId
 );
+impl EventId {
+    /// The stable ID of an event: the first 128 bits of SHA-256 over its source ID, its locator,
+    /// the byte offset of its record (if it has one), its kind, its time meaning, and an ordinal
+    /// for events that share all of those. Fields are length-prefixed, so two different inputs
+    /// never give the same bytes. Changing this changes every ID: the test pins one value.
+    pub fn derive(
+        source: &str,
+        locator: &Locator,
+        offset: Option<u64>,
+        kind: &Kind,
+        meaning: &TimeMeaning,
+        ordinal: u32,
+    ) -> Self {
+        let mut h = Sha256::new();
+        let mut field = |bytes: &[u8]| {
+            h.update((bytes.len() as u64).to_le_bytes());
+            h.update(bytes);
+        };
+        field(b"af.event.v1");
+        field(source.as_bytes());
+        field(locator.to_string().as_bytes());
+        match offset {
+            Some(o) => field(&[&[1u8][..], &o.to_le_bytes()].concat()),
+            None => field(&[0u8]),
+        }
+        field(kind.as_str().as_bytes());
+        field(meaning.as_str().as_bytes());
+        field(&ordinal.to_le_bytes());
+        let digest = h.finalize();
+        let mut first = [0u8; 16];
+        first.copy_from_slice(&digest[..16]);
+        Self(u128::from_be_bytes(first))
+    }
+}
+
 opaque_id!(
     /// The ID of a group, unique within a project.
     GroupId
@@ -225,5 +264,61 @@ mod tests {
         assert_eq!(SystemId::parse(&text), Some(s));
         assert_eq!(SystemId::parse("not-a-uuid"), None);
         assert_eq!(EventId(255).to_string(), format!("{:032x}", 255));
+    }
+
+    fn derive(offset: Option<u64>, ordinal: u32) -> EventId {
+        EventId::derive(
+            "source-1",
+            &Locator::root("source.image", "exam.E01").child("fs.file", "$MFT"),
+            offset,
+            &Kind::new("windows.mft.si").unwrap(),
+            &TimeMeaning::new("ntfs.si.modified").unwrap(),
+            ordinal,
+        )
+    }
+
+    #[test]
+    fn rerunning_gives_identical_ids() {
+        assert_eq!(derive(Some(4096), 0), derive(Some(4096), 0));
+        // Pinned, so a change to the derivation can't slip through unnoticed.
+        assert_eq!(
+            derive(Some(4096), 0).to_string(),
+            "ac65b378c55363478a3044397e906e5d" // recomputed with Python hashlib
+        );
+    }
+
+    #[test]
+    fn every_field_counts() {
+        let base = derive(Some(4096), 0);
+        assert_ne!(base, derive(Some(4096), 1));
+        assert_ne!(base, derive(Some(4097), 0));
+        assert_ne!(derive(Some(0), 0), derive(None, 0));
+        let other_meaning = EventId::derive(
+            "source-1",
+            &Locator::root("source.image", "exam.E01").child("fs.file", "$MFT"),
+            Some(4096),
+            &Kind::new("windows.mft.si").unwrap(),
+            &TimeMeaning::new("ntfs.si.created").unwrap(),
+            0,
+        );
+        assert_ne!(base, other_meaning);
+        // Length prefixes: moving text between fields gives another ID.
+        let a = EventId::derive(
+            "ab",
+            &Locator::root("x.y", "c"),
+            None,
+            &Kind::new("k.k").unwrap(),
+            &TimeMeaning::new("m.m").unwrap(),
+            0,
+        );
+        let b = EventId::derive(
+            "a",
+            &Locator::root("x.y", "bc"),
+            None,
+            &Kind::new("k.k").unwrap(),
+            &TimeMeaning::new("m.m").unwrap(),
+            0,
+        );
+        assert_ne!(a, b);
     }
 }
