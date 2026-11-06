@@ -27,10 +27,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      # On failure, the first error lines become annotations, which anyone can read through the
+      # API (the full log needs admin rights).
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        shell: bash
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee lint.log
+          s=${PIPESTATUS[0]}; [ $s -eq 0 ] || grep -E "^(error|warning)" -A6 lint.log | head -40 | sed 's/^/::error::/'; exit $s
       - name: Test
-        run: cargo test --workspace --locked
+        shell: bash
+        run: |
+          cargo test --workspace --locked 2>&1 | tee test.log
+          s=${PIPESTATUS[0]}; [ $s -eq 0 ] || grep -E "^(error|warning)|panicked|FAILED" -A6 test.log | head -40 | sed 's/^/::error::/'; exit $s
       # Layer rules and the Windows-name scan (F1, F2). The test step above also checks
       # that a workspace with planted violations fails (xtask/fixtures/bad).
       - name: Layer rules
