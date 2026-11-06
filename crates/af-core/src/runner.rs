@@ -207,6 +207,92 @@ pub fn run(
     }
 }
 
+/// Everything a run produced, in a canonical order: what plugins emitted (plugin, kind,
+/// payload) and each plugin's outcome per system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunResult {
+    pub emitted: Vec<(String, String, String)>,
+    pub outcomes: Vec<(String, u128, String)>,
+}
+
+#[derive(Default)]
+struct Collect(Vec<(String, String, String)>);
+
+impl Sink for Collect {
+    fn emit(&mut self, plugin: &Kind, kind: &Kind, payload: String) {
+        self.0
+            .push((plugin.as_str().into(), kind.as_str().into(), payload));
+    }
+}
+
+/// Runs `plugins` on `targets` once, fresh, and returns the result in canonical order.
+pub fn run_collect(plugins: &[&dyn Plugin], targets: &[Target<'_>]) -> RunResult {
+    let mut sink = Collect::default();
+    let mut log = OutcomeLog::new();
+    run(plugins, targets, &mut sink, &mut log, &mut RunLog::new());
+    let mut emitted = sink.0;
+    emitted.sort();
+    let mut outcomes: Vec<(String, u128, String)> = log
+        .all()
+        .iter()
+        .map(|r| {
+            (
+                r.plugin.as_str().into(),
+                r.system.0,
+                format!("{:?}", r.outcome),
+            )
+        })
+        .collect();
+    outcomes.sort();
+    RunResult { emitted, outcomes }
+}
+
+/// The order test (F29): runs `plugins` on `targets` in `orders` shuffled orders of plugins and
+/// systems (from `seed`), and returns the first order whose result differs from the first run,
+/// as the plugin IDs in that order. Groups, links and facts must not depend on run order.
+pub fn check_order_independence(
+    plugins: &[&dyn Plugin],
+    targets: &[Target<'_>],
+    orders: usize,
+    seed: u64,
+) -> Result<(), Vec<String>> {
+    let reference = run_collect(plugins, targets);
+    let mut rng = seed | 1;
+    let mut next = move || {
+        // xorshift64: deterministic and good enough to shuffle a few dozen items.
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng
+    };
+    let mut ps: Vec<&dyn Plugin> = plugins.to_vec();
+    let mut ts: Vec<usize> = (0..targets.len()).collect();
+    for _ in 0..orders {
+        for i in (1..ps.len()).rev() {
+            ps.swap(i, (next() % (i as u64 + 1)) as usize);
+        }
+        for i in (1..ts.len()).rev() {
+            ts.swap(i, (next() % (i as u64 + 1)) as usize);
+        }
+        let shuffled: Vec<Target<'_>> = ts
+            .iter()
+            .map(|&i| Target {
+                system: targets[i].system,
+                caps: targets[i].caps,
+                available: targets[i].available.clone(),
+                input_hashes: targets[i].input_hashes.clone(),
+            })
+            .collect();
+        if run_collect(&ps, &shuffled) != reference {
+            return Err(ps
+                .iter()
+                .map(|p| p.manifest().id.as_str().to_string())
+                .collect());
+        }
+    }
+    Ok(())
+}
+
 /// `not_acquired` if a required input or a needed capability is missing.
 fn missing_requirement(m: &Manifest, t: &Target<'_>) -> Option<Outcome> {
     let input_missing = m.required_inputs().any(|i| !t.available.contains(&i.kind));
@@ -532,5 +618,87 @@ mod tests {
             log.get(&k("test.flaky"), SystemId(1)).unwrap().outcome,
             Outcome::Ok(3)
         );
+    }
+
+    /// Correlates from what it was given, so its output can't depend on other plugins.
+    struct Pure(Manifest);
+
+    impl Plugin for Pure {
+        fn manifest(&self) -> &Manifest {
+            &self.0
+        }
+        fn correlate(&self, ctx: &mut RunContext<'_>) -> Outcome {
+            let payload = format!("group of system {}", ctx.system.id.0);
+            ctx.sink.emit(&self.0.id, &k("test.group"), payload);
+            Outcome::Ok(1)
+        }
+    }
+
+    /// Reads and bumps shared state: the bug the order test exists to catch.
+    struct Racy(Manifest, &'static std::sync::atomic::AtomicU64);
+
+    impl Plugin for Racy {
+        fn manifest(&self) -> &Manifest {
+            &self.0
+        }
+        fn index(&self, _ctx: &mut RunContext<'_>) -> Outcome {
+            // Reset each run, so only the order within a run changes the output.
+            self.1.store(0, std::sync::atomic::Ordering::SeqCst);
+            Outcome::Ok(0)
+        }
+        fn correlate(&self, ctx: &mut RunContext<'_>) -> Outcome {
+            let seen = self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let payload = format!("{} saw {seen} before it", self.0.id);
+            ctx.sink.emit(&self.0.id, &k("test.link"), payload);
+            Outcome::Ok(1)
+        }
+    }
+
+    fn manifest(id: &str) -> Manifest {
+        Manifest {
+            id: k(id),
+            version: 1,
+            applies_to: vec![],
+            phases: vec![Phase::Index, Phase::Extract, Phase::Correlate],
+            inputs: vec![],
+            needs: vec![],
+            produces: vec![],
+        }
+    }
+
+    #[test]
+    fn same_result_across_10_random_orders() {
+        let plugins: Vec<Box<dyn Plugin>> = vec![
+            Box::new(Pure(manifest("test.a"))),
+            Box::new(Pure(manifest("test.b"))),
+            Box::new(TestPlugin::new("test.c", vec![], &[], &[])),
+            Box::new(Pure(manifest("test.d"))),
+        ];
+        let refs: Vec<&dyn Plugin> = plugins.iter().map(|p| p.as_ref()).collect();
+        let systems = [
+            system(1, Family::Windows),
+            system(2, Family::None),
+            system(3, Family::Linux),
+        ];
+        let targets: Vec<Target<'_>> = systems.iter().map(|s| target(s, &[])).collect();
+        assert_eq!(check_order_independence(&refs, &targets, 10, 42), Ok(()));
+    }
+
+    #[test]
+    fn an_order_dependent_plugin_is_caught() {
+        static SHARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (a, b) = (
+            Racy(manifest("test.racy_a"), &SHARED),
+            Racy(manifest("test.racy_b"), &SHARED),
+        );
+        let s = system(1, Family::Windows);
+        let targets = [target(&s, &[])];
+        // Same order, same result: the counter resets each run.
+        assert_eq!(
+            run_collect(&[&a, &b], &targets),
+            run_collect(&[&a, &b], &targets)
+        );
+        // A flipped order changes who saw what, and some shuffle flips it.
+        assert!(check_order_independence(&[&a, &b], &targets, 10, 7).is_err());
     }
 }
