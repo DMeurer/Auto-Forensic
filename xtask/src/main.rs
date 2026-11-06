@@ -13,6 +13,8 @@
 //!
 //! Every violation is printed as `path:line: [rule] message`, and the exit code is 1 if any.
 
+mod compare;
+
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, PackageId};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -70,8 +72,12 @@ fn main() -> ExitCode {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     match args.first().map(String::as_str) {
         Some("check") => {}
+        Some("compare") => return compare::run(&args),
         _ => {
-            eprintln!("usage: cargo xtask check [--root <workspace dir>]");
+            eprintln!(
+                "usage: cargo xtask check [--root <workspace dir>]\n       \
+                 cargo xtask compare IMAGE --af-folder DIR [--offset SECTORS] [--no-hash]"
+            );
             return ExitCode::from(2);
         }
     }
