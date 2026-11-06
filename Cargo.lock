@@ -13,7 +13,9 @@ name = "af-cli"
 version = "0.0.0"
 dependencies = [
  "af-core",
+ "af-fmt-regf",
  "af-store",
+ "af-windows",
  "clap",
 ]
 
@@ -24,6 +26,10 @@ dependencies = [
  "sha2",
  "uuid",
 ]
+
+[[package]]
+name = "af-fmt-regf"
+version = "0.0.0"
 
 [[package]]
 name = "af-host"
@@ -47,6 +53,7 @@ name = "af-windows"
 version = "0.0.0"
 dependencies = [
  "af-core",
+ "af-fmt-regf",
 ]
 
 [[package]]

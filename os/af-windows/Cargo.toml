@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 af-core.workspace = true
+af-fmt-regf.workspace = true
 
 [lints]
 workspace = true

@@ -32,3 +32,75 @@ fn project_new_then_info() {
     assert!(err.contains("isn't empty"), "{err}");
     std::fs::remove_dir_all(&parent).unwrap();
 }
+
+/// F22's "done when": SYSTEM, SOFTWARE and NTUSER.DAT are identified with their names removed.
+#[test]
+fn renamed_hives_are_identified() {
+    let parent = std::env::temp_dir().join(format!("af-cli-hives-{}", std::process::id()));
+    let case = parent.join("case");
+    std::fs::create_dir_all(&parent).unwrap();
+    let hives: [(&str, &[&str]); 3] = [
+        (
+            "file1",
+            &["ControlSet001", "MountedDevices", "Select", "Setup"],
+        ),
+        (
+            "file2",
+            &["Classes", "Microsoft", "Policies", "Setup", "WOW6432Node"],
+        ),
+        (
+            "file3",
+            &["AppEvents", "Control Panel", "Environment", "Software"],
+        ),
+    ];
+    for (name, roots) in hives {
+        std::fs::write(parent.join(name), af_fmt_regf::build_test_hive(roots, "lh")).unwrap();
+    }
+    std::fs::write(parent.join("notes.txt"), b"plain text").unwrap();
+    let c = case.to_str().unwrap();
+    assert!(af(&["project", "new", c]).0);
+    let mut kinds = Vec::new();
+    for name in ["file1", "file2", "file3"] {
+        let (ok, out, err) = af(&["source", "add", c, parent.join(name).to_str().unwrap()]);
+        assert!(ok, "{err}");
+        kinds.push(
+            out.lines()
+                .find(|l| l.starts_with("kind"))
+                .unwrap()
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        kinds,
+        [
+            "kind   windows.hive.system",
+            "kind   windows.hive.software",
+            "kind   windows.hive.ntuser"
+        ]
+    );
+    // Not a hive: no kind, unless named with --as.
+    let notes = parent.join("notes.txt");
+    let (_, out, _) = af(&["source", "add", c, notes.to_str().unwrap()]);
+    assert!(out.contains("kind   unknown"), "{out}");
+    let (ok, out, _) = af(&[
+        "source",
+        "add",
+        c,
+        notes.to_str().unwrap(),
+        "--as",
+        "user.notes",
+    ]);
+    assert!(ok && out.contains("kind   user.notes"), "{out}");
+    let (ok, _, err) = af(&[
+        "source",
+        "add",
+        c,
+        notes.to_str().unwrap(),
+        "--as",
+        "Bad Kind",
+    ]);
+    assert!(!ok && err.contains("namespaced"), "{err}");
+    let (_, list, _) = af(&["source", "list", c]);
+    assert_eq!(list.matches("kind: windows.hive.").count(), 3, "{list}");
+    std::fs::remove_dir_all(&parent).unwrap();
+}

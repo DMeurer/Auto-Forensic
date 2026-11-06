@@ -1,6 +1,9 @@
 //! The `af` command.
 
+use af_core::artifact::Artifact;
+use af_core::bytes::Locator;
 use af_core::ids::SourceId;
+use af_core::names::Kind;
 use af_core::runner::Plugin;
 use af_core::time::Time;
 use af_store::project::Project;
@@ -37,7 +40,14 @@ enum Command {
 #[derive(Subcommand)]
 enum SourceCommand {
     /// Add an image (referenced, never written) or a loose file (copied into the project).
-    Add { project: PathBuf, path: PathBuf },
+    /// A loose file's kind is detected from its content (a hive by its root keys).
+    Add {
+        project: PathBuf,
+        path: PathBuf,
+        /// Name a loose file's kind by hand, such as windows.hive.system.
+        #[arg(long = "as", value_name = "KIND")]
+        as_kind: Option<String>,
+    },
     /// List the sources with their hashes.
     List { project: PathBuf },
     /// Remove a source and everything read from it. An image itself is never touched.
@@ -106,13 +116,43 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(out, "plugins:  {} compiled in", PLUGINS.len())?;
         }
         Command::Source(cmd) => match cmd {
-            SourceCommand::Add { project, path } => {
-                let s = Project::open(&project)?.add_source(&path)?;
+            SourceCommand::Add {
+                project,
+                path,
+                as_kind,
+            } => {
+                let as_kind = as_kind.map(|k| Kind::new(&k)).transpose()?;
+                let mut p = Project::open(&project)?;
+                let s = p.add_source(&path)?;
                 writeln!(out, "added {} {} {:?}", s.kind, s.id, s.label)?;
                 writeln!(out, "sha256 {}", s.sha256)?;
+                if s.kind == "loose" {
+                    // shortcut: reads the whole copy; fine for hives, revisit for large loose files.
+                    let kind = match as_kind {
+                        Some(k) => Some(k),
+                        None => af_windows::loose::detect(&std::fs::read(&s.files[0])?),
+                    };
+                    match kind {
+                        Some(kind) => {
+                            let mut index = p.store.artifacts()?;
+                            index.add(Artifact {
+                                kind: kind.clone(),
+                                locator: Locator::root("source.loose", &s.id.to_string()),
+                                source: s.id,
+                                system: None,
+                                sha256: s.sha256.clone(),
+                            });
+                            p.store.save_artifacts(&index)?;
+                            writeln!(out, "kind   {kind}")?;
+                        }
+                        None => writeln!(out, "kind   unknown; name it with --as KIND")?,
+                    }
+                }
             }
             SourceCommand::List { project } => {
-                for s in Project::open(&project)?.sources()? {
+                let p = Project::open(&project)?;
+                let index = p.store.artifacts()?;
+                for s in p.sources()? {
                     writeln!(
                         out,
                         "{} {:5} {:>14} {} {}",
@@ -125,6 +165,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             "  (missing: relink it)"
                         };
                         writeln!(out, "    {}{mark}", f.display())?;
+                    }
+                    for a in index.all().filter(|a| a.source == s.id) {
+                        writeln!(out, "    kind: {}", a.kind)?;
                     }
                 }
             }

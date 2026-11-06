@@ -1,0 +1,11 @@
+[package]
+name = "af-fmt-regf"
+description = "Registry hive (regf) reading from bytes: header and the root key's subkey names."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

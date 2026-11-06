@@ -8,6 +8,7 @@
 //! | `FILETIME` (NTFS, registry, EVTX, Prefetch) | [`af_core::time::encoding::TICKS_1601`] |
 //! | FAT date and time words | [`af_core::time::encoding::DOS_LOCAL`], `DOS_LOCAL_10MS`, `DOS_LOCAL_DATE` |
 
+pub mod loose;
 pub mod profile;
 pub mod registry;
 
