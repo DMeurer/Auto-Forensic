@@ -144,6 +144,11 @@ impl Project {
                 fingerprint(&files)?,
             )
         };
+        let check = if kind == "image" {
+            image_check(&files)?
+        } else {
+            None
+        };
         let added = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -164,6 +169,20 @@ impl Project {
                 duckdb::params![id.0, seq as i32, s, len],
             )?;
         }
+        if let Some(c) = &check {
+            tx.execute(
+                "INSERT INTO image_checks VALUES (?, ?, ?, ?, ?, ?, ?)",
+                duckdb::params![
+                    id.0,
+                    c.stored_md5,
+                    c.stored_sha1,
+                    c.computed_md5,
+                    c.result,
+                    c.acquisition_errors,
+                    c.acquired
+                ],
+            )?;
+        }
         tx.commit()?;
         Ok(SourceInfo {
             id,
@@ -174,6 +193,25 @@ impl Project {
             fingerprint,
             files,
         })
+    }
+
+    /// The E01 check made when the source was added, if it is an E01.
+    pub fn image_check(&self, id: SourceId) -> Result<Option<ImageCheck>, ProjectError> {
+        let mut stmt = self.store.conn.prepare(
+            "SELECT stored_md5, stored_sha1, computed_md5, result, acquisition_errors, acquired \
+             FROM image_checks WHERE source = ?",
+        )?;
+        let mut rows = stmt.query_map([id.0], |r| {
+            Ok(ImageCheck {
+                stored_md5: r.get(0)?,
+                stored_sha1: r.get(1)?,
+                computed_md5: r.get(2)?,
+                result: r.get(3)?,
+                acquisition_errors: r.get(4)?,
+                acquired: r.get(5)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
     }
 
     /// Sets when a source's evidence was captured. `basis` is one of [`AsOf::BASES`].
@@ -294,6 +332,7 @@ impl Project {
             "artifacts",
             "systems",
             "source_files",
+            "image_checks",
         ] {
             tx.execute(&format!("DELETE FROM {table} WHERE source = ?"), [id.0])?;
         }
@@ -373,6 +412,89 @@ impl Project {
         tx.commit()?;
         self.source(id)
     }
+}
+
+/// What an E01 says about itself, and whether its media still hash to what it stored (I6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageCheck {
+    pub stored_md5: Option<String>,
+    pub stored_sha1: Option<String>,
+    pub computed_md5: String,
+    /// `verified`, `MISMATCH`, `no stored hash` or `unreadable: <why>`.
+    pub result: String,
+    /// Sector ranges the imager couldn't read, as `first+count` separated by commas; empty if none.
+    pub acquisition_errors: String,
+    /// The acquisition date as the imager wrote it: local time of that machine, zone unknown.
+    pub acquired: Option<String>,
+}
+
+impl ImageCheck {
+    /// One line for `af status` and `af source add`.
+    pub fn display(&self) -> String {
+        let stored = match (&self.stored_md5, &self.stored_sha1) {
+            (Some(m), Some(s)) => format!("stored MD5 {m}, SHA-1 {s}"),
+            (Some(m), None) => format!("stored MD5 {m}"),
+            _ => "no stored hash".into(),
+        };
+        let errors = if self.acquisition_errors.is_empty() {
+            "no acquisition errors".to_string()
+        } else {
+            format!("acquisition errors at sectors {}", self.acquisition_errors)
+        };
+        format!("E01 {}: {stored}; {errors}", self.result)
+    }
+}
+
+/// The verdict from the two hash comparisons: any mismatch wins, then any match.
+fn verdict(md5: Option<bool>, sha1: Option<bool>) -> &'static str {
+    match (md5, sha1) {
+        (Some(false), _) | (_, Some(false)) => "MISMATCH",
+        (None, None) => "no stored hash",
+        _ => "verified",
+    }
+}
+
+/// Reads a whole E01 set to recompute its media hash. `None` for images that aren't E01s.
+fn image_check(files: &[PathBuf]) -> std::io::Result<Option<ImageCheck>> {
+    let is_e01 = files
+        .first()
+        .and_then(|f| f.extension())
+        .is_some_and(|e| e.eq_ignore_ascii_case("e01"));
+    if !is_e01 {
+        return Ok(None);
+    }
+    // A damaged E01 is still evidence: it is added, and the check says what's wrong with it.
+    let unreadable = |e: &dyn std::fmt::Display| ImageCheck {
+        stored_md5: None,
+        stored_sha1: None,
+        computed_md5: String::new(),
+        result: format!("unreadable: {e}"),
+        acquisition_errors: String::new(),
+        acquired: None,
+    };
+    let img = match af_host::ewf::EwfImage::open(files, af_core::bytes::Locator::default()) {
+        Ok(i) => i,
+        Err(e) => return Ok(Some(unreadable(&e))),
+    };
+    let r = img.reader();
+    let v = match r.verify() {
+        Ok(v) => v,
+        Err(e) => return Ok(Some(unreadable(&e))),
+    };
+    let stored = r.stored_hashes();
+    Ok(Some(ImageCheck {
+        stored_md5: stored.md5.map(|h| hex(&h)),
+        stored_sha1: stored.sha1.map(|h| hex(&h)),
+        computed_md5: hex(&v.computed_md5),
+        result: verdict(v.md5_match, v.sha1_match).into(),
+        acquisition_errors: r
+            .acquisition_errors()
+            .iter()
+            .map(|e| format!("{}+{}", e.first_sector, e.sector_count))
+            .collect::<Vec<_>>()
+            .join(","),
+        acquired: r.metadata().acquiry_date.clone(),
+    }))
 }
 
 fn is_image(path: &Path) -> bool {
@@ -502,6 +624,30 @@ fn hex(b: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_mismatch_wins_over_a_match() {
+        assert_eq!(verdict(Some(true), Some(false)), "MISMATCH");
+        assert_eq!(verdict(Some(true), None), "verified");
+        assert_eq!(verdict(None, None), "no stored hash");
+    }
+
+    /// I6 on a real E01, where the dfVFS samples are fetched: stored and recomputed MD5 agree.
+    #[test]
+    fn an_added_e01_is_verified() {
+        let e01 = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("af-stage3/evidence/dfvfs/ext2.E01");
+        if !e01.is_file() {
+            return;
+        }
+        let root = scratch("e01");
+        let mut p = Project::create(&root.join("case"), "t").unwrap();
+        let s = p.add_source(&e01).unwrap();
+        let c = p.image_check(s.id).unwrap().expect("an E01 gets a check");
+        assert_eq!(c.result, "verified", "{c:?}");
+        assert_eq!(c.stored_md5.as_deref(), Some(c.computed_md5.as_str()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     use super::*;
     use crate::EventRow;
     use af_core::time::Time;

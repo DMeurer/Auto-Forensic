@@ -87,6 +87,9 @@ impl Project {
                 String::new()
             };
             let _ = writeln!(out, "  {} {} {}{note}", s.id, s.kind, s.label);
+            if let Some(c) = self.image_check(s.id)? {
+                let _ = writeln!(out, "    {}", c.display());
+            }
         }
         let kinds = index.kinds();
         let _ = writeln!(out, "artifacts: {} kind(s)", kinds.len());

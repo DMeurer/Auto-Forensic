@@ -239,6 +239,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(out, "{}", p.as_of(s.id)?.display())?;
                 writeln!(out, "added {} {} {:?}", s.kind, s.id, s.label)?;
                 writeln!(out, "sha256 {}", s.sha256)?;
+                if let Some(c) = p.image_check(s.id)? {
+                    writeln!(out, "{}", c.display())?;
+                    if let Some(d) = &c.acquired {
+                        writeln!(out, "acquired {d} (the imager's local time, zone unknown)")?;
+                    }
+                }
                 if s.kind == "device" {
                     for (dev, at) in af_host::device::mounted(&s.files[0]) {
                         writeln!(

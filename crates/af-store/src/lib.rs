@@ -4,6 +4,8 @@
 //! - `project`: one row, the project's name, creation time and creating af version (F19).
 //! - `sources` and `source_files`: what was added, with hashes and where its files are (F20).
 //!   Records, events and entities carry their `source`, so removing a source removes them.
+//! - `image_checks`: an E01's stored hashes, the recomputed MD5, the verdict and the
+//!   acquisition errors it records, from when it was added (I6).
 //! - `artifacts`: the artifact index (F21): kind, locator, source, system and hash.
 //! - `systems` and `system_facts`: one system per import and its identifying facts (F23).
 //! - `run_log`: which plugin version extracted which inputs on which system (F24).
@@ -63,6 +65,15 @@ CREATE TABLE IF NOT EXISTS sources (
     added_unix BIGINT NOT NULL,
     as_of_unix BIGINT,
     as_of_basis VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS image_checks (
+    source UHUGEINT NOT NULL,
+    stored_md5 VARCHAR,
+    stored_sha1 VARCHAR,
+    computed_md5 VARCHAR NOT NULL,
+    result VARCHAR NOT NULL,
+    acquisition_errors VARCHAR NOT NULL,
+    acquired VARCHAR
 );
 CREATE TABLE IF NOT EXISTS source_files (
     source UHUGEINT NOT NULL,
