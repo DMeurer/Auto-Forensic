@@ -27,20 +27,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
-      # On failure, the first error lines become annotations, which anyone can read through the
+      # On failure, the last 40 lines become one annotation (GitHub keeps at most 10 per step), which anyone can read through the
       # API (the full log needs admin rights).
       - name: Lint
         shell: bash
         run: |
           set +e  # GitHub runs bash with -eo pipefail, which would stop before the annotations
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee lint.log
-          s=${PIPESTATUS[0]}; [ $s -eq 0 ] || sed 's/\x1b\[[0-9;]*m//g' lint.log | grep -v '^ *Compiling\|^ *Checking' | tail -15 | sed 's/^/::error::/'; exit $s
+          s=${PIPESTATUS[0]}; [ $s -eq 0 ] || echo "::error::$(sed 's/\x1b\[[0-9;]*m//g' lint.log | grep -v '^ *Compiling\|^ *Checking\|^ *Download' | tail -40 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"; exit $s
       - name: Test
         shell: bash
         run: |
           set +e
           cargo test --workspace --locked 2>&1 | tee test.log
-          s=${PIPESTATUS[0]}; [ $s -eq 0 ] || sed 's/\x1b\[[0-9;]*m//g' test.log | grep -v '^ *Compiling\|^ *Checking' | tail -15 | sed 's/^/::error::/'; exit $s
+          s=${PIPESTATUS[0]}; [ $s -eq 0 ] || echo "::error::$(sed 's/\x1b\[[0-9;]*m//g' test.log | grep -v '^ *Compiling\|^ *Checking\|^ *Download' | tail -40 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"; exit $s
       # Layer rules and the Windows-name scan (F1, F2). The test step above also checks
       # that a workspace with planted violations fails (xtask/fixtures/bad).
       - name: Layer rules
