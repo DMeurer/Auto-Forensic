@@ -7,6 +7,7 @@
 //! - `artifacts`: the artifact index (F21): kind, locator, source, system and hash.
 //! - `systems` and `system_facts`: one system per import and its identifying facts (F23).
 //! - `run_log`: which plugin version extracted which inputs on which system (F24).
+//! - `tags`: the analyst's tags on events, groups, facts or files; they survive re-runs (F25).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -29,6 +30,7 @@ use duckdb::{Connection, params};
 use std::path::Path;
 
 pub mod project;
+pub mod rebuild;
 pub mod source;
 pub mod system;
 
@@ -73,6 +75,15 @@ CREATE TABLE IF NOT EXISTS run_log (
     system UHUGEINT NOT NULL,
     version UINTEGER NOT NULL,
     inputs VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tags (
+    target_kind VARCHAR NOT NULL,
+    target_id UHUGEINT,
+    target_system UHUGEINT,
+    target_file_scheme VARCHAR,
+    target_file_value BLOB,
+    tag VARCHAR NOT NULL,
+    created_by VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     kind VARCHAR NOT NULL,
