@@ -38,6 +38,7 @@ pub mod groups;
 pub mod lists;
 pub mod project;
 pub mod rebuild;
+pub mod run;
 pub mod source;
 pub mod status;
 pub mod system;
@@ -324,7 +325,7 @@ impl Store {
         };
         let result = (|| {
             let tx = self.conn.transaction()?;
-            for table in ["records", "entities", "links"] {
+            for table in ["records", "entities", "facts", "links"] {
                 tx.execute_batch(&format!("INSERT INTO {table} {};", union(table)))?;
             }
             let n = tx.execute(

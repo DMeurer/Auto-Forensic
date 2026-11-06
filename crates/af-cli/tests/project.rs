@@ -182,6 +182,10 @@ fn a_folder_is_added_in_place() {
         "{out}"
     );
     assert!(!case.join("sources").exists(), "a folder isn't copied");
+    // af run works on any project, even with no plugin compiled in yet.
+    let (ok, out, err) = af(&["run", c]);
+    assert!(ok, "{err}");
+    assert!(out.contains("events loaded"), "{out}");
     let (_, list, _) = af(&["source", "list", c]);
     assert!(
         list.contains(" folder ") && list.contains("linux-root"),

@@ -41,6 +41,8 @@ enum Command {
     System(SystemCommand),
     /// What was read, what's missing, and why.
     Status { project: PathBuf },
+    /// Run the compiled-in plugins on a project. Unchanged inputs aren't extracted again.
+    Run { project: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -171,6 +173,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(out, "by af:    {}", info.created_by_version)?;
             writeln!(out, "plugins:  {} compiled in", PLUGINS.len())?;
         }
+        Command::Run { project } => {
+            let r = af_store::run::run_project(&project, PLUGINS)?;
+            writeln!(
+                out,
+                "ran {} plugins on {} systems: {} extracted, {} events loaded",
+                PLUGINS.len(),
+                r.systems,
+                r.extracted,
+                r.events_loaded
+            )?;
+        }
         Command::Status { project } => {
             write!(
                 out,
@@ -218,6 +231,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         Some(k) => Some(k),
                         None => af_windows::loose::detect(&std::fs::read(&s.files[0])?),
                     };
+                    // Each import is its own system (F23); merging is the analyst's call.
+                    let family = match &kind {
+                        Some(k) if k.namespace() == "windows" => Family::Windows,
+                        _ => Family::None,
+                    };
+                    let sys = p.add_system(s.id, &family, None, &[])?;
                     match &kind {
                         Some(kind) => {
                             let mut index = p.store.artifacts()?;
@@ -225,7 +244,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                 kind: kind.clone(),
                                 locator: Locator::root("source.loose", &s.id.to_string()),
                                 source: s.id,
-                                system: None,
+                                system: Some(sys),
                                 sha256: s.sha256.clone(),
                             });
                             p.store.save_artifacts(&index)?;
@@ -233,12 +252,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         None => writeln!(out, "kind   unknown; name it with --as KIND")?,
                     }
-                    // Each import is its own system (F23); merging is the analyst's call.
-                    let family = match &kind {
-                        Some(k) if k.namespace() == "windows" => Family::Windows,
-                        _ => Family::None,
-                    };
-                    let sys = p.add_system(s.id, &family, None, &[])?;
                     writeln!(out, "system {sys} ({})", family.as_str())?;
                 } else if s.kind == "folder" {
                     // Profiles detect what the folder holds once runs read it (C1); until then

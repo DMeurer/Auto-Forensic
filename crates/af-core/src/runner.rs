@@ -21,11 +21,15 @@
 //! earlier outcome then stays. Index and Correlate always run, because links and groups are
 //! rebuilt every run (F25). A failed extraction isn't logged, so it is tried again.
 
+use crate::artifact::Artifact;
+use crate::bytes::ByteSource;
 use crate::capability::Capabilities;
-use crate::ids::SystemId;
+use crate::ids::{Endpoint, EventId, FactId, SourceId, SystemId};
 use crate::names::Kind;
 use crate::plugin::{Manifest, Outcome, OutcomeLog, OutcomeRecord, Phase};
 use crate::system::System;
+use crate::time::Time;
+use crate::timeline::{ClockDomainId, Sequence, TimeMeaning};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -36,13 +40,70 @@ pub struct RunContext<'a> {
     pub caps: Capabilities<'a>,
     /// The artifact kinds this system has (the artifact index, F21, fills this in).
     pub available: &'a BTreeSet<Kind>,
+    /// This system's artifacts.
+    pub artifacts: &'a [Artifact],
+    /// Opens an artifact's bytes, where the source can be read.
+    pub opener: Option<&'a dyn Opener>,
     /// Where the plugin puts what it produces.
     pub sink: &'a mut dyn Sink,
 }
 
-/// Receives what plugins produce. The project store (F16) is the real one.
+/// Opens the bytes of an artifact.
+pub trait Opener {
+    fn open(&self, artifact: &Artifact) -> std::io::Result<Box<dyn ByteSource>>;
+}
+
+/// An event a plugin produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEvent {
+    pub id: EventId,
+    pub source: SourceId,
+    /// The record the event belongs to (events of one record share it).
+    pub record: u128,
+    pub kind: Kind,
+    pub meaning: TimeMeaning,
+    pub time: Time,
+    pub clock: ClockDomainId,
+    pub seq: Option<Sequence>,
+}
+
+/// A fact a plugin produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewFact {
+    pub id: FactId,
+    pub source: SourceId,
+    pub kind: Kind,
+    pub subject: String,
+    /// Attributes as JSON text.
+    pub attrs: Option<String>,
+}
+
+/// A link a plugin produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLink {
+    pub id: u128,
+    pub kind: Kind,
+    pub from: Endpoint,
+    pub to: Endpoint,
+}
+
+/// Receives what plugins produce. The project's spool (C0b) is the real one; `emit` is the
+/// plain form tests use, and the typed methods fall back to it.
 pub trait Sink {
     fn emit(&mut self, plugin: &Kind, kind: &Kind, payload: String);
+
+    fn event(&mut self, plugin: &Kind, _system: SystemId, e: NewEvent) {
+        let kind = e.kind.clone();
+        self.emit(plugin, &kind, format!("{e:?}"));
+    }
+    fn fact(&mut self, plugin: &Kind, _system: SystemId, f: NewFact) {
+        let kind = f.kind.clone();
+        self.emit(plugin, &kind, format!("{f:?}"));
+    }
+    fn link(&mut self, plugin: &Kind, l: NewLink) {
+        let kind = l.kind.clone();
+        self.emit(plugin, &kind, format!("{l:?}"));
+    }
 }
 
 /// A compiled-in plugin. Each phase method runs only if the manifest lists that phase.
@@ -71,6 +132,42 @@ pub struct Target<'a> {
     /// Per artifact kind, a hash of what this system has of it (such as the sorted artifact
     /// hashes joined). A kind not listed counts as absent.
     pub input_hashes: BTreeMap<Kind, String>,
+    /// This system's artifacts.
+    pub artifacts: Vec<Artifact>,
+    pub opener: Option<&'a dyn Opener>,
+}
+
+impl<'a> Target<'a> {
+    /// A target from a system's artifacts: kinds present and per-kind hashes come from them.
+    pub fn new(
+        system: &'a System,
+        caps: Capabilities<'a>,
+        artifacts: Vec<Artifact>,
+        opener: Option<&'a dyn Opener>,
+    ) -> Self {
+        let mut hashes: BTreeMap<Kind, Vec<String>> = BTreeMap::new();
+        for a in &artifacts {
+            hashes
+                .entry(a.kind.clone())
+                .or_default()
+                .push(a.sha256.clone());
+        }
+        let input_hashes: BTreeMap<Kind, String> = hashes
+            .into_iter()
+            .map(|(k, mut v)| {
+                v.sort();
+                (k, v.join(","))
+            })
+            .collect();
+        Self {
+            system,
+            caps,
+            available: input_hashes.keys().cloned().collect(),
+            input_hashes,
+            artifacts,
+            opener,
+        }
+    }
 }
 
 /// Which plugin version last extracted which inputs on which system.
@@ -120,14 +217,16 @@ pub fn input_fingerprint(m: &Manifest, t: &Target<'_>) -> String {
 }
 
 /// Runs `plugins` on `targets` through the three phases and records one outcome per plugin and
-/// system in `log`. `runs` says what was already extracted and is updated.
+/// system in `log`. `runs` says what was already extracted and is updated. Returns the plugins
+/// that extracted, per system, so their earlier output can be replaced.
 pub fn run(
     plugins: &[&dyn Plugin],
     targets: &[Target<'_>],
     sink: &mut dyn Sink,
     log: &mut OutcomeLog,
     runs: &mut RunLog,
-) {
+) -> Vec<(Kind, SystemId)> {
+    let mut extracted: Vec<(Kind, SystemId)> = Vec::new();
     // Outcomes so far, by (plugin index, target index).
     let mut results: BTreeMap<(usize, usize), Outcome> = BTreeMap::new();
     // Extractions skipped because the run log is current.
@@ -168,6 +267,8 @@ pub fn run(
                     system: t.system,
                     caps: t.caps,
                     available: &t.available,
+                    artifacts: &t.artifacts,
+                    opener: t.opener,
                     sink,
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| match phase {
@@ -178,6 +279,9 @@ pub fn run(
                 .unwrap_or_else(|e| Outcome::Failed(panic_text(e.as_ref(), phase)));
                 if phase == Phase::Extract && matches!(outcome, Outcome::Ok(_)) {
                     runs.record(m.id.clone(), m.version, t.system.id, fingerprint);
+                }
+                if phase == Phase::Extract {
+                    extracted.push((m.id.clone(), t.system.id));
                 }
                 let merged = match (results.remove(&(pi, ti)), outcome) {
                     (Some(Outcome::Ok(a)), Outcome::Ok(b)) => Outcome::Ok(a + b),
@@ -205,6 +309,7 @@ pub fn run(
             outcome,
         });
     }
+    extracted
 }
 
 /// Everything a run produced, in a canonical order: what plugins emitted (plugin, kind,
@@ -281,6 +386,8 @@ pub fn check_order_independence(
                 caps: targets[i].caps,
                 available: targets[i].available.clone(),
                 input_hashes: targets[i].input_hashes.clone(),
+                artifacts: targets[i].artifacts.clone(),
+                opener: targets[i].opener,
             })
             .collect();
         if run_collect(&ps, &shuffled) != reference {
@@ -412,6 +519,8 @@ mod tests {
                 .iter()
                 .map(|a| (k(a), format!("hash of {a}")))
                 .collect(),
+            artifacts: vec![],
+            opener: None,
         }
     }
 
