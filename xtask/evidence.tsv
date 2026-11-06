@@ -1,0 +1,29 @@
+# Public evidence for af's tests (piece I3). Fetched by `cargo xtask evidence fetch SET` into
+# ~/af-stage3/evidence/SET, never into the repository. Columns, tab-separated:
+# set, file name, size in bytes, SHA-256 of the file (- until pinned on first fetch),
+# MD5 of the media inside an E01 (- if none is published; ewfverify still checks the stored one), URL.
+dfvfs	mbr.raw	4194304	94e2ddff3cae988c24ccb04f5e8302d161b4195a1e6ff60084225c44fb6076ba	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/mbr.raw
+dfvfs	gpt.raw	4194304	d5337855c2662f54bc81a8068081e71a74b6313814f29d4c52d7b16e623d9b8c	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/gpt.raw
+dfvfs	gpt_in_mbr.raw	8388608	d9081443b371175a419dda92860909e193c2ac69ae319e91dea47941eca17747	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/gpt_in_mbr.raw
+dfvfs	fat12.raw	4194304	60aacdf576dad24743d80a66a045bcdfbbd0ef4d368cece060bf087ee114da2f	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/fat12.raw
+dfvfs	ntfs.raw	4194304	28a2f08b20d39c09e5f6b88f568fa863866b45b2e04b66bcbea33177cff88714	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ntfs.raw
+dfvfs	ext2.raw	4194304	a6c2f0e39afe6c6ab432ca5465349fcefe8dc944398e97b2d957d3f89dbb5d80	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext2.raw
+dfvfs	ext4.raw	4194304	d88dd5f6774526a94ad74e061c6a4245fef302e03c917277fb4043e30ed8b434	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext4.raw
+dfvfs	ext2.splitraw.000	2097152	2a864677a8f3c56a57ef5f02ca456205e06a274c5ba1b803c8235601d7930ee2	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext2.splitraw.000
+dfvfs	ext2.splitraw.001	2097152	5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext2.splitraw.001
+dfvfs	ext2.E01	12122	ab9ea9a4951b74c37025ba40a978e85b1e4a0d94438080afb636144170d3f35b	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext2.E01
+dfvfs	ext2.split.E01	3116330	d14f130c462b0ab8efb6bb44bbfe5680e00ffaa90538cde84579d1eb0dcac00f	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext2.split.E01
+dfvfs	ext2.split.E02	1083353	b508375954ec1d1caeed8a6e5fc503f98493816ad6a3af89f5d220244c5f2864	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/ext2.split.E02
+dfvfs	vss.raw	82771968	e633f0be5fb9ee9a07d44ba5223b786012ce89e9f0024f93d743568e6d052f16	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/vss.raw
+dfvfs	bdetogo.raw	67108864	ed7982a1f9263e4e54889fea1fa74112d12fea0a0aa7cd8f84fc6f03198ae71b	-	https://raw.githubusercontent.com/log2timeline/dfvfs/bf5d2fd3131646306507490d0389783d69b57676/test_data/bdetogo.raw
+jean	nps-2008-jean.E01	1572860321	df3a995c7a594e0ba6d95b9aae735a444313fae435a87e7536f9dad3db2769ce	-	https://digitalcorpora.s3.amazonaws.com/corpora/drives/nps-2008-m57-jean/nps-2008-jean.E01
+jean	nps-2008-jean.E02	1466890611	07f1f78c857d5b5809ac7a68e1467d36872fa74f047ee2c799d37b18aad4f5aa	-	https://digitalcorpora.s3.amazonaws.com/corpora/drives/nps-2008-m57-jean/nps-2008-jean.E02
+lonewolf	LoneWolf.E01	1572704213	-	7af48fa65519e84246b1729e5b68f140	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E01
+lonewolf	LoneWolf.E02	1572709105	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E02
+lonewolf	LoneWolf.E03	1572749825	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E03
+lonewolf	LoneWolf.E04	1572762495	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E04
+lonewolf	LoneWolf.E05	1572678499	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E05
+lonewolf	LoneWolf.E06	1572802511	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E06
+lonewolf	LoneWolf.E07	1572769343	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E07
+lonewolf	LoneWolf.E08	1572723308	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E08
+lonewolf	LoneWolf.E09	963603171	-	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E09

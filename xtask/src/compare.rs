@@ -63,7 +63,7 @@ fn tsk_meta(path: &str) -> bool {
         || path.ends_with("(Volume Label Entry)")
 }
 
-fn hash_stream(mut r: impl Read) -> std::io::Result<(u64, String)> {
+pub fn hash_stream(mut r: impl Read) -> std::io::Result<(u64, String)> {
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     let mut n = 0u64;

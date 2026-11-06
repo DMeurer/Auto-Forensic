@@ -14,6 +14,7 @@
 //! Every violation is printed as `path:line: [rule] message`, and the exit code is 1 if any.
 
 mod compare;
+mod evidence;
 mod fixtures;
 
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, PackageId};
@@ -75,11 +76,13 @@ fn main() -> ExitCode {
         Some("check") => {}
         Some("compare") => return compare::run(&args),
         Some("fixtures") => return fixtures::run_cmd(&args),
+        Some("evidence") => return evidence::run(&args),
         _ => {
             eprintln!(
                 "usage: cargo xtask check [--root <workspace dir>]\n       \
                  cargo xtask compare IMAGE --af-folder DIR [--offset SECTORS] [--no-hash]\n       \
-                 cargo xtask fixtures OUTDIR [fat16 fat32 exfat ntfs]"
+                 cargo xtask fixtures OUTDIR [fat16 fat32 exfat ntfs]\n       \
+                 cargo xtask evidence [list] | fetch SET... [--dir DIR]"
             );
             return ExitCode::from(2);
         }
