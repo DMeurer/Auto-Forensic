@@ -6,7 +6,8 @@
 //!
 //! - a photo deleted and left intact;
 //! - a photo deleted, then its clusters reused by a later file (overwritten): a zero-filled
-//!   `filler.bin` first takes almost all free space, so the later file can only go where the
+//!   `neu/filler.bin` first takes all free space (in a subfolder, so the root keeps the
+//!   deleted entries), so the later file can only go where the
 //!   photo was; it goes into a subfolder, so the photo's root entry stays;
 //! - files moved into a folder (on FAT the old entries stay behind as deleted ones);
 //! - long names with an umlaut, and an 8.3 name.
@@ -156,31 +157,33 @@ fn build(fs: &str, dir: &Path) -> Result<Vec<Truth>, String> {
             std::fs::rename(m.join(f), m.join("images").join(f)).map_err(|e| e.to_string())?;
         }
         sync()?;
-        // Deleted, left intact.
+        // Deleted at the very end, so nothing can be written over it.
         w("Geburtstag.jpg", &photo_b)?;
-        sync()?;
-        std::fs::remove_file(m.join("Geburtstag.jpg")).map_err(|e| e.to_string())?;
         sync()?;
         // Deleted, then its clusters reused: zeros fill the disk until it is full, so after the
         // photo is deleted its clusters are the only free space for the later file.
         {
             use std::io::Write as _;
-            let mut f = std::fs::File::create(m.join("filler.bin")).map_err(|e| e.to_string())?;
+            let mut f =
+                std::fs::File::create(m.join("neu/filler.bin")).map_err(|e| e.to_string())?;
             let chunk = vec![0u8; 64 << 10];
             while f.write_all(&chunk).is_ok() {}
             let _ = f.sync_all();
         }
         sync()?;
-        filler_len = std::fs::metadata(m.join("filler.bin"))
+        filler_len = std::fs::metadata(m.join("neu/filler.bin"))
             .map_err(|e| e.to_string())?
             .len() as usize;
         std::fs::remove_file(m.join("Urlaub Foto am Strand.jpg")).map_err(|e| e.to_string())?;
         sync()?;
         w("neu/später geschrieben.bin", &later)?;
+        sync()?;
+        // Deleted, left intact: its clusters are free but nothing comes after.
+        std::fs::remove_file(m.join("Geburtstag.jpg")).map_err(|e| e.to_string())?;
         sync()
     })?;
     t(
-        "filler.bin",
+        "neu/filler.bin",
         &vec![0u8; filler_len],
         "live",
         "zeros taking the free space",
