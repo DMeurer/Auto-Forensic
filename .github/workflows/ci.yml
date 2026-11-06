@@ -25,6 +25,12 @@ jobs:
         run: rustup toolchain install
       # Keeps the compiled bundled DuckDB (af-store) between runs; without it each run rebuilds it.
       - uses: Swatinem/rust-cache@v2
+      # libduckdb-sys unpacks its sources into target/duckdb-sources and panics ("Directory not
+      # empty") when the cache restored that folder without its completion marker. Unpacking
+      # again takes seconds; the compiled library in the cache is unaffected.
+      - name: Drop stale DuckDB sources
+        shell: bash
+        run: rm -rf target/duckdb-sources
       - name: Format
         run: cargo fmt --all --check
       # On failure, the last 40 lines become one annotation (GitHub keeps at most 10 per step), which anyone can read through the
