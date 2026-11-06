@@ -215,3 +215,57 @@ fn a_folder_is_added_in_place() {
     );
     std::fs::remove_dir_all(&parent).unwrap();
 }
+
+/// C1: a hand-built Linux root added as a folder is detected, and af run reads its wtmp (the
+/// 400-byte layout here; both layouts are tested in af-fmt-utmp) and passwd.
+#[test]
+fn a_linux_root_is_detected_and_read() {
+    let parent = std::env::temp_dir().join(format!("af-cli-linux-{}", std::process::id()));
+    let root = parent.join("rootfs");
+    let wtmp = af_fmt_utmp::build_test_file(
+        400,
+        &[
+            (2, "reboot", "~", "4.15.0-29-generic", 1_531_143_874, 0),
+            (7, "admin", "pts/0", "192.168.2.57", 1_531_143_900, 123_456),
+            (8, "", "pts/0", "", 1_531_147_500, 0),
+        ],
+    );
+    for (p, data) in [
+        (
+            "etc/os-release",
+            &b"PRETTY_NAME=\"Debian GNU/Linux 9 (stretch)\"\n"[..],
+        ),
+        ("etc/hostname", b"logserver\n"),
+        (
+            "etc/passwd",
+            b"root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000::/home/admin:/bin/bash\n",
+        ),
+        ("var/log/wtmp", &wtmp),
+    ] {
+        std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+        std::fs::write(root.join(p), data).unwrap();
+    }
+    let case = parent.join("case");
+    let c = case.to_str().unwrap();
+    assert!(af(&["project", "new", c]).0);
+    let (ok, _, err) = af(&["source", "add", c, root.to_str().unwrap()]);
+    assert!(ok, "{err}");
+    let (_, systems, _) = af(&["system", "list", c]);
+    assert!(
+        systems.contains(" linux ") && systems.contains("logserver"),
+        "{systems}"
+    );
+    assert!(
+        systems.contains("linux.os_release: Debian GNU/Linux 9 (stretch)"),
+        "{systems}"
+    );
+    let (ok, out, err) = af(&["run", c]);
+    assert!(ok, "{err}{out}");
+    let (_, status, _) = af(&["status", c]);
+    assert!(status.contains("linux.wtmp v1: read, 3 items"), "{status}");
+    assert!(
+        status.contains("linux.passwd v1: read, 2 items"),
+        "{status}"
+    );
+    std::fs::remove_dir_all(&parent).unwrap();
+}

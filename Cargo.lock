@@ -14,6 +14,8 @@ version = "0.0.0"
 dependencies = [
  "af-core",
  "af-fmt-regf",
+ "af-fmt-utmp",
+ "af-linux",
  "af-store",
  "af-windows",
  "clap",
@@ -32,11 +34,23 @@ name = "af-fmt-regf"
 version = "0.0.0"
 
 [[package]]
+name = "af-fmt-utmp"
+version = "0.0.0"
+
+[[package]]
 name = "af-host"
 version = "0.0.0"
 dependencies = [
  "af-core",
  "tempfile",
+]
+
+[[package]]
+name = "af-linux"
+version = "0.0.0"
+dependencies = [
+ "af-core",
+ "af-fmt-utmp",
 ]
 
 [[package]]

@@ -17,6 +17,8 @@ af-host = { path = "crates/af-host" }
 af-store = { path = "crates/af-store" }
 af-windows = { path = "os/af-windows" }
 af-fmt-regf = { path = "formats/af-fmt-regf" }
+af-fmt-utmp = { path = "formats/af-fmt-utmp" }
+af-linux = { path = "os/af-linux" }
 
 # No debug info for dependencies: the bundled DuckDB with it filled a 79 GB disk (24 GB target).
 [profile.dev.package."*"]
