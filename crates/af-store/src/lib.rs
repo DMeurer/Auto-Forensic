@@ -1,6 +1,7 @@
 //! The project store (piece F16): one DuckDB file per project.
 //!
 //! Tables:
+//! - `project`: one row, the project's name, creation time and creating af version (F19).
 //! - `records`: what a source row is, shared by all its events (one `$MFT` record gives several
 //!   time events). Typed columns every source has, plus `attrs`, JSON text for the rest.
 //! - `events`: one row per timestamp, pointing at its record. The time columns are exactly
@@ -17,11 +18,18 @@ use af_core::time::TimeColumns;
 use duckdb::{Connection, params};
 use std::path::Path;
 
+pub mod project;
+
 pub use duckdb::Error;
 
 /// The tables. `attrs` is VARCHAR holding JSON text.
 // shortcut: JSON as VARCHAR, not the JSON type, so the json extension isn't compiled in; switch when queries need json functions.
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS project (
+    name VARCHAR NOT NULL,
+    created_unix BIGINT NOT NULL,
+    created_by_version VARCHAR NOT NULL
+);
 CREATE TABLE IF NOT EXISTS records (
     id UHUGEINT NOT NULL,
     system UHUGEINT NOT NULL,
