@@ -32,11 +32,13 @@ jobs:
       - name: Lint
         shell: bash
         run: |
+          set +e  # GitHub runs bash with -eo pipefail, which would stop before the annotations
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee lint.log
           s=${PIPESTATUS[0]}; [ $s -eq 0 ] || sed 's/\x1b\[[0-9;]*m//g' lint.log | grep -v '^ *Compiling\|^ *Checking' | tail -15 | sed 's/^/::error::/'; exit $s
       - name: Test
         shell: bash
         run: |
+          set +e
           cargo test --workspace --locked 2>&1 | tee test.log
           s=${PIPESTATUS[0]}; [ $s -eq 0 ] || sed 's/\x1b\[[0-9;]*m//g' test.log | grep -v '^ *Compiling\|^ *Checking' | tail -15 | sed 's/^/::error::/'; exit $s
       # Layer rules and the Windows-name scan (F1, F2). The test step above also checks
