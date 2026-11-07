@@ -11,6 +11,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# notatin (Apache-2.0) at the commit stage 1 tested (T7), for full key and value reading with
-# transaction-log replay (R1).
-notatin = { git = "https://github.com/strozfriedberg/notatin", rev = "ae3a70611bc37b2ca04637671ceb14ccab9d5a87" }
+# notatin (Apache-2.0) from our fork, branch `af`: upstream's commit stage 1 tested (T7) plus
+# fixes for crashes fuzzing found (I25). See formats/README.md.
+notatin = { git = "https://github.com/DMeurer/notatin", rev = "219d80894b4e4c31a101ada94b531a0e8555538b" }

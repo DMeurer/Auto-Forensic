@@ -1295,7 +1295,7 @@ dependencies = [
 [[package]]
 name = "notatin"
 version = "1.0.1"
-source = "git+https://github.com/strozfriedberg/notatin?rev=ae3a70611bc37b2ca04637671ceb14ccab9d5a87#ae3a70611bc37b2ca04637671ceb14ccab9d5a87"
+source = "git+https://github.com/DMeurer/notatin?rev=219d80894b4e4c31a101ada94b531a0e8555538b#219d80894b4e4c31a101ada94b531a0e8555538b"
 dependencies = [
  "bitflags 2.13.2",
  "blake3",

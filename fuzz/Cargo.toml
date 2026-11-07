@@ -47,3 +47,4 @@ path = "fuzz_targets/regf.rs"
 test = false
 doc = false
 bench = false
+
