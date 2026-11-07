@@ -40,8 +40,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
 
     let mut families: Vec<String> = p.systems().unwrap().into_iter().map(|s| s.family).collect();
     families.sort();
-    // Partition 1 is the recovery partition: NTFS with no Windows marker of its own.
-    assert_eq!(families, ["none", "windows"]);
+    // Partition 1, the recovery partition (`Recovery/WindowsRE`), belongs to the Windows system.
+    assert_eq!(families, ["windows"]);
 
     let index = p.store.artifacts().unwrap();
     let mut kinds: BTreeMap<String, Vec<String>> = BTreeMap::new();

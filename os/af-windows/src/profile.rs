@@ -1,8 +1,10 @@
 //! The Windows profile, a stub so far (piece F10).
 //!
 //! - **Detect:** a volume with `Windows\System32\config\SYSTEM` holds a Windows system, which
-//!   claims that volume. Claiming its other partitions needs `MountedDevices` from the SYSTEM
-//!   hive, which comes with the registry capability (F11) and the registry plugins.
+//!   claims that volume, and every recovery partition of the same source (a volume with
+//!   `Recovery\WindowsRE`), so the recovery files stay with their system (I23). Claiming its
+//!   other partitions needs `MountedDevices` from the SYSTEM hive, which comes with the registry
+//!   capability (F11) and the registry plugins.
 //! - **Views:** one view with backslashes that ignores case. The system volume is `C:`; any
 //!   further claimed volumes follow as `D:`, `E:` and so on, until the real drive letters can be
 //!   read from the registry.
@@ -29,12 +31,21 @@ pub struct WindowsProfile;
 impl Detector for WindowsProfile {
     fn detect(&self, volumes: &[&dyn VolumeProbe]) -> Vec<Detected> {
         let marker = MemVolume::path(MARKER);
+        let recovery = MemVolume::path("Recovery/WindowsRE");
+        let recoveries: Vec<VolumeId> = volumes
+            .iter()
+            .filter(|v| v.exists(&recovery) && !v.exists(&marker))
+            .map(|v| v.id())
+            .collect();
         volumes
             .iter()
             .filter(|v| v.exists(&marker))
             .map(|v| Detected {
                 family: Family::Windows,
-                volumes: vec![v.id()],
+                volumes: [v.id()]
+                    .into_iter()
+                    .chain(recoveries.iter().copied())
+                    .collect(),
                 label: None,
                 parent_volume: None,
                 reason: "Windows\\System32\\config\\SYSTEM exists".into(),
@@ -254,6 +265,26 @@ mod tests {
             assert_eq!(s.family, Family::Windows);
             assert_eq!(s.views[0].mounts[0].point, "C:");
         }
+    }
+
+    #[test]
+    fn a_recovery_partition_belongs_to_the_windows_system() {
+        let re = MemVolume::new(1, &["Recovery/WindowsRE", "Recovery/WindowsRE/Winre.wim"]);
+        let os = MemVolume::new(2, &["Windows/System32/config/SYSTEM"]);
+        let (sid, vid) = counters();
+        let (systems, _) =
+            build_systems(&[&re, &os], &profiles(), &Capabilities::default(), sid, vid);
+        assert_eq!(systems.len(), 1, "{systems:?}");
+        assert_eq!(systems[0].family, Family::Windows);
+        assert_eq!(
+            systems[0].volumes,
+            [os.id, re.id],
+            "the system volume first"
+        );
+        // Without Windows on the source, a recovery partition is just a volume.
+        let (sid, vid) = counters();
+        let (alone, _) = build_systems(&[&re], &profiles(), &Capabilities::default(), sid, vid);
+        assert_eq!(alone[0].family, Family::None);
     }
 
     #[test]
