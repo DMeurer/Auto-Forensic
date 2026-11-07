@@ -204,3 +204,32 @@ fn compressed_sparse_and_split_files_hash_like_tsk() {
         );
     }
 }
+
+/// I19: a hard-linked file shows every path it has. All 30,945 such records also match TSK
+/// in `in_use_paths_match_fls`.
+#[test]
+fn a_hard_link_shows_both_paths() {
+    let Some(fs) = lonewolf() else { return };
+    let v = FsVolume {
+        id: VolumeId(4),
+        fs: &fs,
+    };
+    let path = ViewPath::new(
+        ["Windows", "System32", "notepad.exe"]
+            .map(|n| Name::from_text(n, NameKind::Utf16))
+            .to_vec(),
+    );
+    let e = fs.entry(&v.lookup(&path).unwrap()).unwrap().unwrap();
+    let shown: Vec<String> = paths(&fs, &e)
+        .unwrap()
+        .iter()
+        .map(|p| p.display())
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "/Windows/System32/notepad.exe",
+            "/Windows/WinSxS/amd64_microsoft-windows-notepad_31bf3856ad364e35_10.0.16299.15_none_9206b96de1242e9d/notepad.exe",
+        ]
+    );
+}
