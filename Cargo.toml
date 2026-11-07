@@ -2,7 +2,7 @@
 resolver = "3"
 # The folder a crate sits in decides which layer rules apply to it (see README.md and `cargo xtask check`).
 members = ["crates/*", "formats/*", "fs/*", "os/*", "xtask"]
-exclude = ["xtask/fixtures"]
+exclude = ["xtask/fixtures", "fuzz"]
 
 [workspace.package]
 version = "0.0.0"

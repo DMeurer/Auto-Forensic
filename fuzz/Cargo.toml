@@ -1,0 +1,49 @@
+[package]
+name = "af-fuzz"
+description = "Fuzz targets for the parsers and file system adapters (I25). Run with `cargo +nightly fuzz run <target>`; see fuzz/README.md."
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: libFuzzer needs nightly and sanitizer flags the main build doesn't use.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+af-core = { path = "../crates/af-core" }
+af-host = { path = "../crates/af-host" }
+af-fmt-regf = { path = "../formats/af-fmt-regf" }
+af-fs-archive = { path = "../fs/af-fs-archive" }
+af-fs-ntfs = { path = "../fs/af-fs-ntfs" }
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "volumes"
+path = "fuzz_targets/volumes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ntfs"
+path = "fuzz_targets/ntfs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regf"
+path = "fuzz_targets/regf.rs"
+test = false
+doc = false
+bench = false

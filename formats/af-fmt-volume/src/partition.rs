@@ -139,7 +139,7 @@ fn table(
     let mut sorted: Vec<&Partition> = partitions.iter().collect();
     sorted.sort_by_key(|p| p.start);
     for w in sorted.windows(2) {
-        if w[0].start + w[0].len > w[1].start {
+        if w[0].start.saturating_add(w[0].len) > w[1].start {
             notes.push(format!(
                 "partitions {} and {} overlap",
                 w[0].number, w[1].number
@@ -303,9 +303,11 @@ fn gpt(
         let (first, last) = (u64le(e, 32), u64le(e, 40));
         let range = (last >= first)
             .then(|| {
-                first
-                    .checked_mul(ss)
-                    .zip((last - first + 1).checked_mul(ss))
+                first.checked_mul(ss).zip(
+                    (last - first)
+                        .checked_add(1)
+                        .and_then(|n| n.checked_mul(ss)),
+                )
             })
             .flatten();
         let Some((start, len)) = range else {
@@ -500,6 +502,30 @@ mod tests {
             read(&[0u8; 100]).scheme,
             Scheme::None,
             "too short is no panic"
+        );
+    }
+
+    /// Found by fuzzing (I25): table values near 2^64 must not overflow.
+    #[test]
+    fn huge_starts_and_lengths_dont_overflow() {
+        let part = |number, start, len| Partition {
+            number,
+            start,
+            len,
+            kind: String::new(),
+            description: String::new(),
+        };
+        let t = table(
+            Scheme::Gpt,
+            512,
+            vec![part(1, u64::MAX - 10, 100), part(2, u64::MAX - 5, 1)],
+            vec![],
+            1000,
+        );
+        assert!(
+            t.notes.iter().any(|n| n.contains("overlap")),
+            "{:?}",
+            t.notes
         );
     }
 
