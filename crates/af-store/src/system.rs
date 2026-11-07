@@ -35,9 +35,9 @@ pub struct MergeSuggestion {
 }
 
 impl Project {
-    /// Detects the systems in a folder source with `profiles` (C1), records each as a system of
-    /// that source with its identity, and adds the artifacts each profile knows by path to the
-    /// artifact index. A folder nothing claims becomes one `none` system.
+    /// Detects the systems in a folder or archive source with `profiles` (C1, I22), records each
+    /// as a system of that source with its identity, and adds the artifacts each profile knows by
+    /// path to the artifact index. A source nothing claims becomes one `none` system.
     pub fn add_folder_systems(
         &mut self,
         source: &crate::source::SourceInfo,
@@ -45,9 +45,21 @@ impl Project {
     ) -> Result<Vec<SystemId>, ProjectError> {
         use af_core::artifact::Artifact;
         use af_core::bytes::Locator;
+        use af_core::fs::{FileSystem, FsVolume, StreamName};
         use af_core::system::{ViewId, VolumeId, VolumeProbe};
-        let vol = af_host::folder::FolderVolume::new(VolumeId(source.id.0), &source.files[0]);
-        let vols: [&dyn VolumeProbe; 1] = [&vol];
+        let folder = af_host::folder::FolderVolume::new(VolumeId(source.id.0), &source.files[0]);
+        let archive = match source.kind.as_str() {
+            "archive" => Some(crate::run::open_archive(source)?),
+            _ => None,
+        };
+        let in_archive = archive.as_ref().map(|fs| FsVolume {
+            id: VolumeId(source.id.0),
+            fs,
+        });
+        let vols: [&dyn VolumeProbe; 1] = [match &in_archive {
+            Some(v) => v,
+            None => &folder,
+        }];
         let (systems, identities) = af_core::profile::build_systems(
             &vols,
             profiles,
@@ -66,16 +78,35 @@ impl Project {
             )?;
             if let Some(profile) = af_core::profile::profile_for(&sys.family, profiles) {
                 for (_, path, kind) in profile.index(sys, &vols) {
-                    let Some(on_disk) = vol.on_disk(&path) else {
-                        continue;
+                    let sha256 = match (&in_archive, &archive) {
+                        (Some(v), Some(fs)) => {
+                            let Some(data) = v
+                                .lookup(&path)
+                                .map(|f| fs.open(&f, &StreamName::Default))
+                                .transpose()?
+                                .flatten()
+                            else {
+                                continue;
+                            };
+                            af_host::ewf::sha256_of(&*data)?
+                        }
+                        _ => {
+                            let Some(on_disk) = folder.on_disk(&path) else {
+                                continue;
+                            };
+                            crate::source::full_hash(&[on_disk])?
+                        }
                     };
                     index.add(Artifact {
                         kind,
-                        locator: Locator::root("source.folder", &source.id.to_string())
-                            .child("fs.path", &crate::run::folder_locator_path(&path)),
+                        locator: Locator::root(
+                            &format!("source.{}", source.kind),
+                            &source.id.to_string(),
+                        )
+                        .child("fs.path", &crate::run::folder_locator_path(&path)),
                         source: source.id,
                         system: Some(id),
-                        sha256: crate::source::full_hash(&[on_disk])?,
+                        sha256,
                     });
                 }
             }

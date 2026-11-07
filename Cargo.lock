@@ -44,6 +44,15 @@ name = "af-fmt-volume"
 version = "0.0.0"
 
 [[package]]
+name = "af-fs-archive"
+version = "0.0.0"
+dependencies = [
+ "af-core",
+ "flate2",
+ "tempfile",
+]
+
+[[package]]
 name = "af-fs-ntfs"
 version = "0.0.0"
 dependencies = [
@@ -77,6 +86,7 @@ name = "af-store"
 version = "0.0.0"
 dependencies = [
  "af-core",
+ "af-fs-archive",
  "af-host",
  "duckdb",
  "sha2",

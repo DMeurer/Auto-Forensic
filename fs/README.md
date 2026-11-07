@@ -14,3 +14,7 @@ One crate per file system, named `af-fs-<fs>`, each implementing `af_core::fs::F
 Before opening a pull request upstream, still to do: sign the commits with gitsign, run `cargo deny check`, `cargo llvm-cov --lib --show-missing-lines` (100 % line coverage) and the fuzz targets, none of which are installed here.
 
 To take a newer upstream: on branch `af`, `git fetch https://github.com/SecurityRonin/ntfs-forensic main && git rebase FETCH_HEAD`, run upstream's tests, push, and update the pinned commit.
+
+## `af-fs-archive`
+
+Zip (with ZIP64) and tar (ustar, GNU long names, pax) as file systems, parsed by hand rather than with the `zip` and `tar` crates, so every member keeps its offset in the archive. A source added as `.zip` or `.tar` is referenced in place like an image and read through this crate (I22). Not read yet: member times, tar hard links, `.tar.gz`, split zips, encrypted or non-deflate zip members.

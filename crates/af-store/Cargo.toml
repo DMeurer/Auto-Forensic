@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 af-core.workspace = true
 af-host.workspace = true
+af-fs-archive.workspace = true
 # The version tested in stage 1 (T1). `bundled` compiles DuckDB itself, so users install nothing.
 duckdb = { version = "=1.20000.1", default-features = false, features = ["bundled"] }
 sha2 = "0.11.1"

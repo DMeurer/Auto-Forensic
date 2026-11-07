@@ -12,16 +12,19 @@ use crate::project::{Project, ProjectError};
 use crate::source::SourceInfo;
 use crate::{EventRow, Store};
 use af_core::artifact::Artifact;
-use af_core::bytes::ByteSource;
+use af_core::bytes::{ByteSource, ExtentSource, Locator};
 use af_core::capability::Capabilities;
+use af_core::fs::{FileSystem, FsVolume, StreamName};
 use af_core::ids::SystemId;
 use af_core::names::Kind;
 use af_core::path::{NameKind, ViewPath};
 use af_core::runner::{NewEvent, NewFact, NewLink, Opener, Plugin, Sink, Target, run};
 use af_core::system::{Family, System, VolumeId};
+use af_fs_archive::Archive;
 use af_host::folder::{FileSource, FolderVolume};
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 /// What a run did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +77,7 @@ impl Sink for SpoolSink {
     }
 }
 
-/// Opens artifacts of a project: loose files from their copy, folder files in place.
+/// Opens artifacts of a project: loose files from their copy, folder and archive files in place.
 struct ProjectOpener {
     sources: Vec<SourceInfo>,
 }
@@ -86,31 +89,56 @@ impl Opener for ProjectOpener {
             .iter()
             .find(|s| s.id == a.source)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "artifact without a source"))?;
+        // A folder or archive locator's last step holds the path below it, `/` between names.
+        let rel = a
+            .locator
+            .steps()
+            .last()
+            .map(|st| st.id.as_str())
+            .unwrap_or("");
+        let parse = |kind| {
+            ViewPath::parse(
+                rel,
+                af_core::path::PathStyle {
+                    separator: '/',
+                    case: af_core::path::CasePolicy::Exact,
+                },
+                kind,
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+        };
+        let missing = || {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{rel} isn't in the archive"),
+            )
+        };
         match s.kind.as_str() {
             "loose" => Ok(Box::new(FileSource::open(&s.files[0], a.locator.clone())?)),
             "folder" => {
-                // The locator's last step holds the path below the folder, `/` between names.
-                let rel = a
-                    .locator
-                    .steps()
-                    .last()
-                    .map(|st| st.id.as_str())
-                    .unwrap_or("");
-                let path = ViewPath::parse(
-                    rel,
-                    af_core::path::PathStyle {
-                        separator: '/',
-                        case: af_core::path::CasePolicy::Exact,
-                    },
-                    if cfg!(windows) {
-                        NameKind::Utf16
-                    } else {
-                        NameKind::Bytes
-                    },
-                )
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+                let path = parse(if cfg!(windows) {
+                    NameKind::Utf16
+                } else {
+                    NameKind::Bytes
+                })?;
                 let vol = FolderVolume::new(VolumeId(0), &s.files[0]);
                 Ok(Box::new(vol.open(&path, a.locator.clone())?))
+            }
+            "archive" => {
+                let fs = open_archive(s)?;
+                let vol = FsVolume {
+                    id: VolumeId(0),
+                    fs: &fs,
+                };
+                let id = vol.lookup(&parse(NameKind::Bytes)?).ok_or_else(missing)?;
+                let data = fs.open(&id, &StreamName::Default)?.ok_or_else(missing)?;
+                let len = data.len();
+                Ok(Box::new(ExtentSource::slice(
+                    data,
+                    0,
+                    len,
+                    a.locator.clone(),
+                )?))
             }
             other => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -204,6 +232,15 @@ pub fn run_project(dir: &Path, plugins: &[&dyn Plugin]) -> Result<RunSummary, Pr
 }
 
 /// A path below a folder source as the locator step `fs.path` holds it.
+/// An archive source opened as a file system.
+pub(crate) fn open_archive(s: &SourceInfo) -> io::Result<Archive> {
+    let file = FileSource::open(
+        &s.files[0],
+        Locator::root("source.archive", &s.id.to_string()),
+    )?;
+    Archive::open(Arc::new(file))
+}
+
 pub fn folder_locator_path(path: &ViewPath) -> String {
     let style = af_core::path::PathStyle {
         separator: '/',

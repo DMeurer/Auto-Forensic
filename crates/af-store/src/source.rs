@@ -7,6 +7,8 @@
 //! - **Folders** are referenced like images (C0a): a hand-built root or an exported profile,
 //!   read in place. Their hash covers every file's path and content, the fingerprint every
 //!   file's path and size.
+//! - **Archives** (`.zip`, `.tar`) are referenced like images (I22): a KAPE collection or a
+//!   packed root, read in place through `af-fs-archive` without unpacking.
 //! - **Loose files** (anything else) are copied into `sources/<id>/` inside the project, and the
 //!   copy is checked against the original by hash.
 //!
@@ -26,6 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MIB: u64 = 1 << 20;
 /// What a device source holds where others hold their hash and fingerprint.
 pub const LIVE: &str = "live, not hashed";
+
+const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "tar"];
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "e01", "dd", "raw", "img", "000", "001", "vmdk", "vhd", "vhdx",
@@ -62,7 +66,7 @@ impl AsOf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceInfo {
     pub id: SourceId,
-    /// `image`, `folder`, `device` or `loose`.
+    /// `image`, `folder`, `archive`, `device` or `loose`.
     pub kind: String,
     pub label: String,
     pub size: u64,
@@ -87,6 +91,9 @@ impl Project {
         } else if path.is_dir() {
             let stored = vec![path.to_string_lossy().into_owned()];
             ("folder", vec![path.clone()], stored)
+        } else if has_extension(&path, ARCHIVE_EXTENSIONS) {
+            let stored = vec![path.to_string_lossy().into_owned()];
+            ("archive", vec![path.clone()], stored)
         } else if is_image(&path) {
             let files = segments(&path);
             let stored: Vec<String> = files
@@ -585,9 +592,13 @@ fn image_check(files: &[PathBuf]) -> std::io::Result<Option<ImageCheck>> {
 }
 
 fn is_image(path: &Path) -> bool {
+    has_extension(path, IMAGE_EXTENSIONS)
+}
+
+fn has_extension(path: &Path, list: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .is_some_and(|e| list.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// The segment files of an image: `x.E01`, `x.E02`, ... or `x.001`, `x.002`, ..., counting up
