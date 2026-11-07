@@ -142,3 +142,65 @@ fn in_use_paths_match_fls() {
         &extra[..extra.len().min(10)],
     );
 }
+
+/// I18: compressed and sparse files, and data spread over extension records through
+/// `$ATTRIBUTE_LIST`, hash as `icat -o 1259520 LoneWolf.E0? <record>` gives them.
+#[test]
+fn compressed_sparse_and_split_files_hash_like_tsk() {
+    let Some(fs) = lonewolf() else { return };
+    let v = FsVolume {
+        id: VolumeId(4),
+        fs: &fs,
+    };
+    for (path, size, want) in [
+        // Compressed, data in 21 records (119439).
+        (
+            "Windows/System32/MRT-KB890830.exe",
+            130_364_688,
+            "3b13eb5aaaf0c00a51fa15f00c0b9f26cf647e1a56149054a718088d13484b74",
+        ),
+        // Compressed, data in 13 records (140400).
+        (
+            "ProgramData/Microsoft/Windows Defender/Scans/mpcache-A7681A9F04346C1C183D81FD7DB04EEFC86EC685.bin.79",
+            64_765_952,
+            "36ecefa0d316a86d7acf4034ef5627516999df5b23135f50952a8c2cf81536c8",
+        ),
+        // Compressed, one record (34964).
+        (
+            "Windows/Logs/CBS/CBS.log",
+            7_742_753,
+            "eecf0971ca30510899414eb0153ec41a08852e3af6768d42a0136e1d04ac9b2c",
+        ),
+        // Sparse, data in 2 records (92983).
+        (
+            "Windows/SoftwareDistribution/Download/c72d407696aad956229131246b7fc10a7c23905a",
+            301_324_075,
+            "a821fd8d64e13be1b507e8a5d3d1dcabf9a914e32f90bf46e7fbd6c5df770af3",
+        ),
+        // Sparse, data in 2 records (111776).
+        (
+            "Program Files (x86)/Microsoft Office/root/vfs/ProgramFilesCommonX86/Microsoft Shared/OFFICE16/MSORES.DLL",
+            71_208_128,
+            "b6392a4e6cd9db960e2f1113ca1f51778f667014d666dc37af47f4d47c98fe78",
+        ),
+        // Sparse and small (22238).
+        (
+            "Program Files (x86)/Microsoft Office/root/Templates/1033/TimeCard.xltx",
+            17_663,
+            "8d4ca2d0ed920ee81d6f102091edd06e9fe01f194c2942df25d91eb2c6fa96b9",
+        ),
+    ] {
+        let p = ViewPath::new(
+            path.split('/')
+                .map(|n| Name::from_text(n, NameKind::Utf16))
+                .collect(),
+        );
+        let id = v.lookup(&p).unwrap_or_else(|| panic!("{path} not found"));
+        let src = fs.open(&id, &StreamName::Default).unwrap().expect("opens");
+        assert_eq!(
+            (src.len(), af_host::ewf::sha256_of(&*src).unwrap()),
+            (size, want.to_string()),
+            "{path}"
+        );
+    }
+}

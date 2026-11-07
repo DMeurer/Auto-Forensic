@@ -466,6 +466,7 @@ impl FileSystem for Ntfs {
             _ if stale => return Ok(None),
             _ => {
                 // Resident or compressed: no one-to-one place on the volume, so read it whole.
+                // shortcut: a compressed file costs its full size in memory; decode per compression unit with I25.
                 let data = self
                     .fs
                     .read_data_by_record(r.record_number, name.as_deref(), u64::MAX)
