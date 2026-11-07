@@ -18,7 +18,7 @@ use af_core::path::{CasePolicy, Name, NameKind};
 use af_core::time::{Precision, Time, Zone};
 use ntfs_core::{
     Attribute, AttributeBody, FileName, FileReference, MftRecordHeader, NtfsError, NtfsFs,
-    StandardInformation, parse_attributes,
+    StandardInformation, parse_attributes, runlist::Run,
 };
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -267,29 +267,42 @@ impl Ntfs {
                         }
                     }
                     DATA => {
-                        let size = match a.body {
+                        let (size, stale) = match a.body {
                             AttributeBody::Resident { content_length, .. } => {
-                                u64::from(content_length)
+                                (u64::from(content_length), 0)
+                            }
+                            AttributeBody::NonResident {
+                                start_vcn: 0,
+                                real_size,
+                                initialized_size,
+                                ..
+                            } if !a.is_compressed() => {
+                                (real_size, real_size.saturating_sub(initialized_size))
                             }
                             AttributeBody::NonResident {
                                 start_vcn: 0,
                                 real_size,
                                 ..
-                            } => real_size,
+                            } => (real_size, 0),
                             AttributeBody::NonResident { .. } => continue, // a later fragment
                         };
-                        let (name, k) = match &a.name {
+                        let n = a.name.as_ref().map(|s| Name::from_text(s, NameKind::Utf16));
+                        let (name, k) = match &n {
                             None => (StreamName::Default, "fs.data"),
-                            Some(s) => (
-                                StreamName::Named(Name::from_text(s, NameKind::Utf16)),
-                                "ntfs.ads",
-                            ),
+                            Some(n) => (StreamName::Named(n.clone()), "ntfs.ads"),
                         };
                         streams.push(StreamInfo {
                             name,
                             kind: kind(k),
                             size,
                         });
+                        if stale > 0 {
+                            streams.push(StreamInfo {
+                                name: StreamName::Stale(n),
+                                kind: kind("ntfs.stale_bytes"),
+                                size: stale,
+                            });
+                        }
                     }
                     _ => {}
                 }
@@ -426,9 +439,10 @@ impl FileSystem for Ntfs {
         if h.sequence_number != r.sequence {
             return Ok(None);
         }
-        let name = match stream {
-            StreamName::Default => None,
-            StreamName::Named(n) => Some(n.display()),
+        let (name, stale) = match stream {
+            StreamName::Default => (None, false),
+            StreamName::Named(n) => (Some(n.display()), false),
+            StreamName::Stale(n) => (n.as_ref().map(Name::display), true),
         };
         let attrs = Self::data_attributes(&recs, name.as_deref())?;
         let Some((_, first)) = attrs.first() else {
@@ -439,13 +453,17 @@ impl FileSystem for Ntfs {
             Some(s) => format!("{tag}:{s}"),
             None => tag,
         };
-        let loc = self.volume.locator().child("fs.file", &tag);
+        let loc = self
+            .volume
+            .locator()
+            .child(if stale { "fs.stale_bytes" } else { "fs.file" }, &tag);
         let (real_size, initialized) = match first.body {
             AttributeBody::NonResident {
                 real_size,
                 initialized_size,
                 ..
             } if !first.is_compressed() => (real_size, initialized_size.min(real_size)),
+            _ if stale => return Ok(None),
             _ => {
                 // Resident or compressed: no one-to-one place on the volume, so read it whole.
                 let data = self
@@ -459,41 +477,88 @@ impl FileSystem for Ntfs {
                 ))));
             }
         };
+        if stale && initialized >= real_size {
+            return Ok(None);
+        }
         let cluster = self.fs.boot().cluster_size();
         let runs = self
             .fs
             .runs_by_record(r.record_number, name.as_deref())
             .map_err(err)?;
-        let (mut extents, mut at) = (Vec::new(), 0u64);
-        for run in runs {
-            if at >= real_size {
-                break;
-            }
-            let len = run.length.saturating_mul(cluster).min(real_size - at);
+        let extents = if stale {
+            extents(&runs, cluster, initialized, real_size)
+        } else {
             // Past the initialized size Windows reads zeros, whatever the clusters still hold.
-            // shortcut: those stale bytes aren't reachable yet; I14 adds them as a stream of their own.
-            let live = len.min(initialized.saturating_sub(at));
-            if let (Some(lcn), true) = (run.lcn, live > 0) {
-                extents.push(Extent {
-                    start: at,
-                    len: live,
-                    target: ExtentTarget::Parent(lcn.saturating_mul(cluster)),
-                });
-            }
-            if len > live || run.lcn.is_none() {
-                let from = if run.lcn.is_none() { 0 } else { live };
-                extents.push(Extent {
-                    start: at + from,
-                    len: len - from,
+            let mut x = extents(&runs, cluster, 0, initialized);
+            if x.last().map_or(0, |e| e.start + e.len) == initialized {
+                x.push(Extent {
+                    start: initialized,
+                    len: real_size - initialized,
                     target: ExtentTarget::Sparse,
                 });
             }
-            at += len;
-        }
+            x
+        };
         Ok(Some(Arc::new(ExtentSource::new(
             self.volume.clone(),
             extents,
             loc,
         )?)))
+    }
+}
+
+/// Bytes `from..to` of a stream with these data runs, as extents starting at 0. Holes stay
+/// sparse; runs that end early give a shorter stream.
+fn extents(runs: &[Run], cluster: u64, from: u64, to: u64) -> Vec<Extent> {
+    let (mut out, mut at) = (Vec::new(), 0u64);
+    for run in runs {
+        let end = at.saturating_add(run.length.saturating_mul(cluster));
+        let (lo, hi) = (at.max(from), end.min(to));
+        if lo < hi {
+            out.push(Extent {
+                start: lo - from,
+                len: hi - lo,
+                target: match run.lcn {
+                    Some(lcn) => ExtentTarget::Parent(lcn.saturating_mul(cluster) + (lo - at)),
+                    None => ExtentTarget::Sparse,
+                },
+            });
+        }
+        at = end;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_byte_range_maps_across_runs_and_holes() {
+        // 2 clusters at 10, a hole of 1, 2 clusters at 50; clusters of 100 bytes.
+        let runs = [
+            Run {
+                length: 2,
+                lcn: Some(10),
+            },
+            Run {
+                length: 1,
+                lcn: None,
+            },
+            Run {
+                length: 2,
+                lcn: Some(50),
+            },
+        ];
+        let x = extents(&runs, 100, 150, 420);
+        let got: Vec<_> = x.iter().map(|e| (e.start, e.len, e.target)).collect();
+        assert_eq!(
+            got,
+            [
+                (0, 50, ExtentTarget::Parent(1150)),
+                (50, 100, ExtentTarget::Sparse),
+                (150, 120, ExtentTarget::Parent(5000)),
+            ]
+        );
     }
 }

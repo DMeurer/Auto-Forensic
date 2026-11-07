@@ -136,6 +136,10 @@ pub enum StreamName {
     Default,
     /// An alternate data stream, fork or extended attribute.
     Named(Name),
+    /// What the disk still holds past a stream's initialized length, which normal reads give
+    /// as zeros (NTFS `initialized_size`, later ext4 unwritten extents). `None` is the file's
+    /// data, `Some` a named stream.
+    Stale(Option<Name>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -493,10 +497,10 @@ impl FakeFs {
 
     /// Adds a stream, such as an alternate data stream.
     pub fn stream(&mut self, id: &FileId, name: StreamName, data: &[u8]) {
-        let kind_ = kind(if name == StreamName::Default {
-            "fs.data"
-        } else {
-            "fake.ads"
+        let kind_ = kind(match name {
+            StreamName::Default => "fs.data",
+            StreamName::Named(_) => "fake.ads",
+            StreamName::Stale(_) => "fake.stale_bytes",
         });
         let (e, s) = self.get(id);
         e.streams.push(StreamInfo {
@@ -611,6 +615,7 @@ mod tests {
             StreamName::Named(Name::from_text("Zone.Identifier", NameKind::Utf16)),
             b"[ZoneTransfer]",
         );
+        f.stream(&ntuser, StreamName::Stale(None), b"old bytes");
         let gone = f.file(&users, "deleted.txt", b"old");
         f.delete(&gone);
         let lost_dir = f.folder(&root, "Temp");
