@@ -336,7 +336,11 @@ impl Ntfs {
             streams,
             attrs: vec![],
         })
-        .filter(|e| n == ROOT_RECORD || !e.names.is_empty()))
+        // Nameless records are reserved or never used, except deleted files whose name the
+        // driver cleared (Linux does) but whose data is still there.
+        .filter(|e| {
+            n == ROOT_RECORD || !e.names.is_empty() || (!e.allocated && !e.streams.is_empty())
+        }))
     }
 
     /// The `$DATA` attributes of a stream, in VCN order.
