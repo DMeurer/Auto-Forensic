@@ -4,10 +4,11 @@
 //! the image is missing.
 
 use af_core::bytes::{ByteSource, Locator};
-use af_core::fs::{FileSystem, FsVolume, StreamName};
+use af_core::fs::{FileSystem, FsVolume, StreamName, paths};
 use af_core::path::{Name, NameKind, ViewPath};
 use af_core::system::VolumeId;
 use af_fs_ntfs::Ntfs;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -70,5 +71,74 @@ fn system_hashes_like_tsk_and_its_stale_bytes_stay_reachable() {
     assert_eq!(
         (stale.kind.as_str(), stale.size),
         ("ntfs.stale_bytes", 442_368)
+    );
+}
+
+/// I15: every in-use path matches TSK's `fls -r -p` listing, so no 8.3 name stands in for a
+/// long one. The listing was saved in stage 1 to `~/af-stage1/lonewolf/fls.txt` (course data,
+/// kept out of the repository). Slow: a full MFT walk.
+#[test]
+#[ignore]
+fn in_use_paths_match_fls() {
+    let Some(fs) = lonewolf() else { return };
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let Ok(text) = std::fs::read_to_string(home.join("af-stage1/lonewolf/fls.txt")) else {
+        return;
+    };
+    let mut tsk = BTreeSet::new();
+    for line in text.lines() {
+        let Some((head, path)) = line.split_once(":\t") else {
+            continue;
+        };
+        // Deleted names and TSK's orphan folder belong to I20. So do `r/-` lines, with no
+        // attribute id: a live folder index entry whose record now holds another file.
+        let addr = head.rsplit(' ').next().unwrap();
+        if head.contains(" * ") || path.starts_with("$OrphanFiles") || !addr.contains('-') {
+            continue;
+        }
+        // `file:stream` lines also vouch for the file: `$Secure` has only named streams.
+        let path = match path.rsplit_once('/') {
+            Some((dir, last)) => format!("{dir}/{}", last.split(':').next().unwrap()),
+            None => path.split(':').next().unwrap().to_string(),
+        };
+        if path.ends_with("/.") {
+            continue; // TSK lists a folder's streams a second time under its own `.` entry
+        }
+        let rec = addr.split('-').next().unwrap();
+        tsk.insert((rec.parse::<u64>().unwrap(), format!("/{path}")));
+    }
+    let mut ours = BTreeSet::new();
+    for e in fs.all() {
+        let Ok(e) = e else { continue };
+        if !e.allocated {
+            continue;
+        }
+        let rec = u64::from_le_bytes(e.id.value[..8].try_into().unwrap()) & ((1 << 48) - 1);
+        for p in paths(&fs, &e).unwrap() {
+            let shown = p.display();
+            if !p.orphan && shown != "/" {
+                ours.insert((rec, shown));
+            }
+        }
+    }
+    let missing: Vec<_> = tsk.difference(&ours).collect();
+    let extra: Vec<_> = ours.difference(&tsk).collect();
+    // Folder 102511's index still points TransportSecurity at record 141267 with sequence 6,
+    // but the record is now at sequence 11 and names that folder itself. TSK lists the stale
+    // index entry (`r/-`); paths here come from the record. Stale index entries are I20.
+    let known = (
+        141_267,
+        "/Users/jcloudy/AppData/Local/Google/Chrome/User Data/Default/TransportSecurity"
+            .to_string(),
+    );
+    assert!(
+        missing.is_empty() && extra == [&known],
+        "{} of {} TSK paths missing, e.g. {:?}\n{} extra of {}, e.g. {:?}",
+        missing.len(),
+        tsk.len(),
+        &missing[..missing.len().min(10)],
+        extra.len(),
+        ours.len(),
+        &extra[..extra.len().min(10)],
     );
 }
