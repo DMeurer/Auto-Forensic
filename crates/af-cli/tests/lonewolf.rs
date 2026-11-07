@@ -1,8 +1,8 @@
-//! I23 on LoneWolf (the shared-folder copy, see `xtask/evidence.tsv`): the image gives its
-//! Windows system, and every hive, event log and Prefetch file is indexed, as many as the
-//! stage-1 `fls` listing (`~/af-stage1/lonewolf/fls.txt`) shows. The source goes in through the
-//! store, because `af source add` hashes and verifies all 13.5 GB first. Skips when the image
-//! is missing.
+//! I23 and I24 on LoneWolf (the shared-folder copy, see `xtask/evidence.tsv`): the image gives
+//! its Windows system, every hive, event log and Prefetch file is indexed, as many as the stage-1
+//! `fls` listing (`~/af-stage1/lonewolf/fls.txt`) shows, and after a run `af users` lists the
+//! ProfileList users with their hives. The source goes in through the store, because
+//! `af source add` hashes and verifies all 13.5 GB first. Skips when the image is missing.
 
 use af_core::ids::SourceId;
 use af_core::profile::{NoneProfile, OsProfile};
@@ -37,6 +37,20 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         &NoneProfile,
     ];
     p.add_systems(&source, &profiles).unwrap();
+    // The source row `af source add` would write, without its hash.
+    let db = p.store.connection();
+    db.execute(
+        "INSERT INTO sources VALUES (?, 'image', 'LoneWolf.E01', 0, '', '', 0, NULL, 'unknown')",
+        duckdb::params![source.id.0],
+    )
+    .unwrap();
+    for (seq, f) in source.files.iter().enumerate() {
+        db.execute(
+            "INSERT INTO source_files VALUES (?, ?, ?, 0)",
+            duckdb::params![source.id.0, seq as i32, f.to_str().unwrap()],
+        )
+        .unwrap();
+    }
 
     let mut families: Vec<String> = p.systems().unwrap().into_iter().map(|s| s.family).collect();
     families.sort();
@@ -56,6 +70,11 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     }
     let count = |k: &str| kinds.get(k).map_or(0, Vec::len);
     assert_eq!(count("windows.evtx"), 146);
+    assert_eq!(
+        count("windows.hive.log"),
+        22,
+        "LOG1 and LOG2 of eleven hives"
+    );
     assert_eq!(count("windows.prefetch"), 161);
     for (k, n) in [
         ("windows.hive.system", 1),
@@ -64,7 +83,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         ("windows.hive.security", 1),
         ("windows.hive.default", 1),
         ("windows.hive.amcache", 1),
-        ("windows.hive.ntuser", 2),
+        ("windows.hive.ntuser", 4),
         ("windows.hive.usrclass", 1),
     ] {
         assert_eq!(count(k), n, "{k}: {:?}", kinds.get(k));
@@ -73,5 +92,51 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     assert!(
         ntuser.contains(&"Users/jcloudy/NTUSER.DAT".to_string()),
         "{ntuser:?}"
+    );
+
+    // I24: a run, then `af users`.
+    drop(p);
+    af_store::run::run_project(
+        case.path(),
+        &[
+            &af_windows::plugins::HiveRootKeys,
+            &af_windows::plugins::UserProfiles,
+        ],
+        &profiles,
+    )
+    .unwrap();
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
+        .arg("users")
+        .arg(case.path())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let users = String::from_utf8_lossy(&o.stdout);
+    eprintln!("{users}");
+    let has = |line: &str| users.lines().any(|l| l.trim_start().starts_with(line));
+    assert!(
+        users.lines().any(
+            |l| l.trim_start().starts_with("S-1-5-21-") && l.contains("jcloudy  Users/jcloudy")
+        ),
+        "{users}"
+    );
+    assert!(
+        has("windows.hive.ntuser  Users/jcloudy/NTUSER.DAT"),
+        "{users}"
+    );
+    assert!(
+        has("windows.hive.usrclass  Users/jcloudy/AppData/Local/Microsoft/Windows/UsrClass.dat"),
+        "{users}"
+    );
+    for sid in ["S-1-5-18 ", "S-1-5-19 ", "S-1-5-20 "] {
+        assert!(has(sid), "{sid} in {users}");
+    }
+    assert!(
+        has("windows.hive.ntuser  Windows/ServiceProfiles/LocalService/NTUSER.DAT"),
+        "{users}"
+    );
+    assert!(
+        !users.contains("Users/Default"),
+        "the template isn't a user: {users}"
     );
 }

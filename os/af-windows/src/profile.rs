@@ -95,8 +95,9 @@ impl OsProfile for WindowsProfile {
         }]
     }
 
-    /// On the system volume: the config hives, Amcache, each user's NTUSER.DAT and UsrClass.dat,
-    /// the event logs and the Prefetch files. Names match by the volume's case rules.
+    /// On the system volume: the config hives, Amcache, each user's NTUSER.DAT and UsrClass.dat
+    /// (also of the service profiles), every hive's transaction logs, the event logs and the
+    /// Prefetch files. Names match by the volume's case rules.
     fn index(
         &self,
         system: &System,
@@ -107,10 +108,22 @@ impl OsProfile for WindowsProfile {
         };
         let kind = |k: &str| Kind::new(k).expect("valid kind");
         let mut found = Vec::new();
+        // A hive and its transaction logs: `<name>.LOG1` and `.LOG2` beside it, in any letter
+        // case (LoneWolf has `ntuser.dat.LOG1` beside `NTUSER.DAT`).
         let mut known = |path: ViewPath, k: &str| {
-            if vol.exists(&path) {
-                found.push((vol.id(), path, kind(k)));
+            if !vol.exists(&path) {
+                return;
             }
+            if let (Some(dir), Some(name)) = (path.parent(), path.names().last()) {
+                let base = name.display().to_lowercase();
+                for n in vol.list(&dir) {
+                    let l = n.display().to_lowercase();
+                    if l == format!("{base}.log1") || l == format!("{base}.log2") {
+                        found.push((vol.id(), dir.join(n), kind("windows.hive.log")));
+                    }
+                }
+            }
+            found.push((vol.id(), path, kind(k)));
         };
         for (file, k) in [
             ("SYSTEM", "windows.hive.system"),
@@ -137,6 +150,16 @@ impl OsProfile for WindowsProfile {
                 "windows.hive.usrclass",
             );
         }
+        for home in [
+            "Windows/System32/config/systemprofile",
+            "Windows/ServiceProfiles/LocalService",
+            "Windows/ServiceProfiles/NetworkService",
+        ] {
+            known(
+                below(&MemVolume::path(home), "NTUSER.DAT"),
+                "windows.hive.ntuser",
+            );
+        }
         // Listed names exist, so they skip the lookup.
         for (dir, ext, k) in [
             ("Windows/System32/winevt/Logs", ".evtx", "windows.evtx"),
@@ -150,6 +173,16 @@ impl OsProfile for WindowsProfile {
             }
         }
         found
+    }
+
+    /// The machine hives, with their logs replayed.
+    fn registry(
+        &self,
+        artifacts: &[af_core::artifact::Artifact],
+        opener: &dyn af_core::runner::Opener,
+    ) -> Option<Box<dyn af_core::capability::Registry>> {
+        crate::registry::HiveRegistry::from_artifacts(artifacts, opener)
+            .map(|r| Box::new(r) as Box<dyn af_core::capability::Registry>)
     }
 
     fn identity(
@@ -293,6 +326,7 @@ mod tests {
             1,
             &[
                 "Windows/System32/config/SYSTEM",
+                "Windows/System32/config/SYSTEM.LOG1",
                 "Windows/System32/config/DEFAULT",
                 "Windows/AppCompat/Programs/Amcache.hve",
                 "Windows/System32/winevt/Logs/Security.evtx",
@@ -300,8 +334,10 @@ mod tests {
                 "Windows/Prefetch/CMD.EXE-0BD30981.pf",
                 "Windows/Prefetch/Layout.ini",
                 "Users/admin/NTUSER.DAT",
+                "Users/admin/ntuser.dat.LOG2",
                 "Users/admin/AppData/Local/Microsoft/Windows/UsrClass.dat",
                 "Users/Public/Desktop",
+                "Windows/ServiceProfiles/LocalService/NTUSER.DAT",
             ],
         );
         let (sid, vid) = counters();
@@ -327,7 +363,13 @@ mod tests {
                 "Windows/AppCompat/Programs/Amcache.hve",
             ),
             ("windows.hive.default", "Windows/System32/config/DEFAULT"),
+            ("windows.hive.log", "Users/admin/ntuser.dat.LOG2"),
+            ("windows.hive.log", "Windows/System32/config/SYSTEM.LOG1"),
             ("windows.hive.ntuser", "Users/admin/NTUSER.DAT"),
+            (
+                "windows.hive.ntuser",
+                "Windows/ServiceProfiles/LocalService/NTUSER.DAT",
+            ),
             ("windows.hive.system", "Windows/System32/config/SYSTEM"),
             (
                 "windows.hive.usrclass",

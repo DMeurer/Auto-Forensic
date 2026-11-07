@@ -1,7 +1,7 @@
 //! Registry hive (regf) basics, from bytes (piece F22).
 //!
 //! Enough to tell what a loose hive is: the base block's signature and the names of the root
-//! key's subkeys. Full parsing with transaction-log replay comes with the registry plugins.
+//! key's subkeys. Full parsing with transaction-log replay is in [`hive`], on `notatin` (R1).
 //! Every offset is checked, so a broken or crafted hive gives an error, never a panic.
 //!
 //! Layout used: the base block (4096 bytes) starts with `regf` and holds the root cell offset at
@@ -10,6 +10,8 @@
 //! flags at 0x02 (0x0020: the name is Latin-1, otherwise UTF-16LE), name length at 0x48 and the
 //! name at 0x4C. Subkey lists are `lf`/`lh` (offset and hash per entry), `li` (offsets) and `ri`
 //! (offsets of further lists).
+
+pub mod hive;
 
 use std::fmt;
 

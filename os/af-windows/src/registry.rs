@@ -3,12 +3,18 @@
 //! Windows shows hives under root keys (`HKLM\SYSTEM`, `HKU\<SID>`); core only knows neutral
 //! hive IDs. This module maps between them and decodes Windows value types.
 
-use af_core::capability::{HiveId, RegKey, Registry};
+use af_core::artifact::Artifact;
+use af_core::capability::{HiveId, RegKey, RegValue, Registry};
 use af_core::names::Kind;
 use af_core::path::{Name, NameKind, ViewPath};
+use af_core::runner::Opener;
+use af_core::time::Time;
+use af_fmt_regf::hive::Hive;
+use std::cell::RefCell;
 
 /// Registry value type numbers.
 pub const REG_SZ: u32 = 1;
+pub const REG_EXPAND_SZ: u32 = 2;
 pub const REG_DWORD: u32 = 4;
 
 /// The SYSTEM hive (`HKLM\SYSTEM`).
@@ -33,7 +39,7 @@ pub fn hive_for_root(root: &str) -> Option<HiveId> {
     Some(HiveId(Kind::new(id).expect("valid kind")))
 }
 
-fn path(text: &str) -> ViewPath {
+pub(crate) fn path(text: &str) -> ViewPath {
     ViewPath::new(
         text.split('\\')
             .map(|n| Name::from_text(n, NameKind::Utf16))
@@ -41,11 +47,11 @@ fn path(text: &str) -> ViewPath {
     )
 }
 
-/// A `REG_SZ` value as text: UTF-16LE up to the first NUL. `None` for another type or broken
-/// data (an odd length).
+/// A `REG_SZ` or `REG_EXPAND_SZ` value as text (variables such as `%SystemDrive%` left as they
+/// are): UTF-16LE up to the first NUL. `None` for another type or broken data (an odd length).
 pub fn reg_sz(key: &RegKey, name: &str) -> Option<String> {
     let v = key.value(name)?;
-    if v.value_type != REG_SZ || v.data.len() % 2 != 0 {
+    if !matches!(v.value_type, REG_SZ | REG_EXPAND_SZ) || v.data.len() % 2 != 0 {
         return None;
     }
     let units: Vec<u16> = v
@@ -81,6 +87,92 @@ pub fn computer_name(reg: &dyn Registry) -> Option<String> {
         &path(&format!("{set}\\Control\\ComputerName\\ComputerName")),
     )?;
     reg_sz(&key, "ComputerName")
+}
+
+/// Machine hives by artifact kind, with the hive ID plugins ask for.
+const MACHINE_HIVES: [(&str, &str); 6] = [
+    ("windows.hive.system", "windows.system"),
+    ("windows.hive.software", "windows.software"),
+    ("windows.hive.sam", "windows.sam"),
+    ("windows.hive.security", "windows.security"),
+    ("windows.hive.default", "windows.default"),
+    ("windows.hive.amcache", "windows.amcache"),
+];
+
+/// A system's machine hives as the registry capability (R1), on `af_fmt_regf::hive`.
+pub struct HiveRegistry {
+    hives: Vec<(HiveId, RefCell<Hive>)>,
+}
+
+impl HiveRegistry {
+    /// The machine hives among a system's artifacts, each with its `.LOG1` and `.LOG2`
+    /// artifacts replayed. A hive that doesn't open is left out; `None` if none opens.
+    pub fn from_artifacts(artifacts: &[Artifact], opener: &dyn Opener) -> Option<Self> {
+        let read = |a: &Artifact| -> Option<Vec<u8>> {
+            let src = opener.open(a).ok()?;
+            let mut buf = vec![0; usize::try_from(src.len()).ok()?];
+            src.read_exact_at(0, &mut buf).ok()?;
+            Some(buf)
+        };
+        let mut hives = Vec::new();
+        for (kind, id) in MACHINE_HIVES {
+            let Some(hive) = artifacts.iter().find(|a| a.kind.as_str() == kind) else {
+                continue;
+            };
+            let logs = artifacts
+                .iter()
+                .filter(|l| l.kind.as_str() == "windows.hive.log" && is_log_of(l, hive))
+                .filter_map(read)
+                .collect();
+            let Some(data) = read(hive) else { continue };
+            if let Ok(h) = Hive::open(data, logs) {
+                hives.push((HiveId(Kind::new(id).expect("valid kind")), RefCell::new(h)));
+            }
+        }
+        (!hives.is_empty()).then_some(Self { hives })
+    }
+}
+
+/// Whether `log` is `hive`'s `.LOG1` or `.LOG2`: the same locator up to the path, and the
+/// path with that suffix, ignoring case.
+fn is_log_of(log: &Artifact, hive: &Artifact) -> bool {
+    let (Some((l, l_on)), Some((h, h_on))) = (
+        log.locator.steps().split_last(),
+        hive.locator.steps().split_last(),
+    ) else {
+        return false;
+    };
+    let (l, h) = (l.id.to_lowercase(), h.id.to_lowercase());
+    l_on == h_on && (l == format!("{h}.log1") || l == format!("{h}.log2"))
+}
+
+impl Registry for HiveRegistry {
+    fn hives(&self) -> Vec<HiveId> {
+        self.hives.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    fn key(&self, hive: &HiveId, path: &ViewPath) -> Option<RegKey> {
+        let (_, h) = self.hives.iter().find(|(id, _)| id == hive)?;
+        let text: Vec<String> = path.names().iter().map(Name::display).collect();
+        let k = h.borrow_mut().key(&text.join("\\"))?;
+        let name = |s: &str| Name::from_text(s, NameKind::Utf16);
+        Some(RegKey {
+            path: path.clone(),
+            last_written: u64::try_from(k.last_written)
+                .ok()
+                .map(Time::from_ticks_1601),
+            subkeys: k.subkeys.iter().map(|s| name(s)).collect(),
+            values: k
+                .values
+                .into_iter()
+                .map(|v| RegValue {
+                    name: name(&v.name),
+                    value_type: v.value_type,
+                    data: v.data,
+                })
+                .collect(),
+        })
+    }
 }
 
 #[cfg(test)]

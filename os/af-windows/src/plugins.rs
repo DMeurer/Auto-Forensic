@@ -4,6 +4,7 @@
 //! key's last-written time as an event. It stands in for the registry plugins in the canaries
 //! until those exist, using only the root-key reader.
 
+use af_core::artifact::Artifact;
 use af_core::ids::{Endpoint, EventId, FactId};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
@@ -170,22 +171,93 @@ impl Plugin for HiveRootKeys {
     }
 }
 
-/// One `windows.user_profile` fact per user profile folder that holds an NTUSER.DAT: the
-/// Windows user key until SIDs come with the registry plugins. The subject is the folder name.
+/// One `windows.user_profile` fact per user profile (I24), with the profile's hives. With the
+/// registry, the profiles are SOFTWARE's ProfileList (subject: the SID), each with the
+/// NTUSER.DAT and UsrClass.dat found in its folder. A folder with a hive but no ProfileList entry
+/// is listed too, as `"in_profile_list": false` with the folder name as subject, except the
+/// `Default` and `Public` templates ProfileList names. Without a registry every folder with a hive
+/// is a profile.
 pub struct UserProfiles;
+
+const PROFILE_LIST: &str = "Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
+const USRCLASS: &str = "/AppData/Local/Microsoft/Windows/UsrClass.dat";
+
+/// The profile folder a user hive sits in, from its path below the volume. A loose hive has none.
+fn home_of(a: &Artifact) -> Option<String> {
+    let p = &a.locator.steps().last()?.id;
+    match a.kind.as_str() {
+        "windows.hive.ntuser" => p.rsplit_once('/').map(|(home, _)| home.to_string()),
+        "windows.hive.usrclass" => {
+            let cut = p.len().checked_sub(USRCLASS.len())?;
+            (p.is_char_boundary(cut) && p[cut..].eq_ignore_ascii_case(USRCLASS))
+                .then(|| p[..cut].to_string())
+        }
+        _ => None,
+    }
+}
+
+/// A ProfileImagePath (`C:\Users\x`, `%SystemDrive%\Users\x`, `%systemroot%\...`) as a path
+/// below the system volume, `/` between names.
+fn volume_path(p: &str) -> Option<String> {
+    let p = p.replace('\\', "/");
+    let lower = p.to_ascii_lowercase();
+    if lower.starts_with("%systemdrive%/") {
+        return Some(p["%systemdrive%/".len()..].to_string());
+    }
+    if lower.starts_with("%systemroot%/") {
+        return Some(format!("Windows/{}", &p["%systemroot%/".len()..]));
+    }
+    let b = p.as_bytes();
+    (b.len() > 3 && b[0].is_ascii_alphabetic() && &b[1..3] == b":/").then(|| p[3..].to_string())
+}
+
+/// Whether a hive's folder is this profile folder; a KAPE drive folder (`C/`) may come first.
+fn same_home(hive_home: &str, home: &str) -> bool {
+    let (h, p) = (hive_home.to_ascii_lowercase(), home.to_ascii_lowercase());
+    !p.is_empty() && (h == p || h.ends_with(&format!("/{p}")))
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+struct Profile {
+    subject: String,
+    sid: Option<String>,
+    home: String,
+    listed: bool,
+}
 
 impl Plugin for UserProfiles {
     fn manifest(&self) -> &Manifest {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.user_profiles").expect("valid kind"),
-            version: 1,
+            version: 2,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
-            inputs: vec![Input {
-                kind: Kind::new("windows.hive.ntuser").expect("valid kind"),
-                required: true,
-            }],
+            inputs: [
+                "windows.hive.software",
+                "windows.hive.ntuser",
+                "windows.hive.usrclass",
+            ]
+            .into_iter()
+            .map(|k| Input {
+                kind: Kind::new(k).expect("valid kind"),
+                // A system without a profile hive has no profiles to list.
+                required: k == "windows.hive.ntuser",
+            })
+            .collect(),
             needs: vec![],
             produces: vec![Kind::new("windows.user_profile").expect("valid kind")],
         })
@@ -193,32 +265,97 @@ impl Plugin for UserProfiles {
 
     fn extract(&self, ctx: &mut RunContext<'_>) -> Outcome {
         let fact_kind = Kind::new("windows.user_profile").expect("valid kind");
-        let mut n = 0;
-        for a in ctx
+        let hives: Vec<(String, &Artifact)> = ctx
             .artifacts
             .iter()
-            .filter(|a| a.kind.as_str() == "windows.hive.ntuser")
+            .filter_map(|a| Some((home_of(a)?, a)))
+            .collect();
+        let software = ctx
+            .artifacts
+            .iter()
+            .find(|a| a.kind.as_str() == "windows.hive.software");
+        let hive_id = af_core::capability::HiveId(Kind::new("windows.software").expect("valid"));
+        let mut profiles: Vec<Profile> = Vec::new();
+        let mut templates: Vec<String> = Vec::new();
+        if let (Some(reg), Some(_)) = (ctx.caps.registry, software)
+            && let Some(list) = reg.key(&hive_id, &crate::registry::path(PROFILE_LIST))
         {
-            // A profile hive sits at Users/<name>/NTUSER.DAT; a loose NTUSER.DAT has no folder.
-            let Some(step) = a.locator.steps().last() else {
-                continue;
-            };
-            let parts: Vec<&str> = step.id.split('/').collect();
-            let [.., users, name, _] = parts.as_slice() else {
-                continue;
-            };
-            if !users.eq_ignore_ascii_case("users") {
-                continue;
+            for t in ["Default", "Public"] {
+                templates.extend(crate::registry::reg_sz(&list, t).and_then(|p| volume_path(&p)));
             }
+            for sid in &list.subkeys {
+                let home = reg
+                    .key(&hive_id, &list.path.join(sid.clone()))
+                    .and_then(|k| crate::registry::reg_sz(&k, "ProfileImagePath"))
+                    .and_then(|p| volume_path(&p))
+                    .unwrap_or_default();
+                profiles.push(Profile {
+                    subject: sid.display(),
+                    sid: Some(sid.display()),
+                    home,
+                    listed: true,
+                });
+            }
+        }
+        for (home, _) in &hives {
+            let known = profiles.iter().any(|p| same_home(home, &p.home))
+                || templates.iter().any(|t| same_home(home, t));
+            if !known {
+                profiles.push(Profile {
+                    subject: home.rsplit('/').next().unwrap_or(home).to_string(),
+                    sid: None,
+                    home: home.clone(),
+                    listed: false,
+                });
+            }
+        }
+        let mut n = 0;
+        for p in &profiles {
+            let mine: Vec<&Artifact> = hives
+                .iter()
+                .filter(|(h, _)| same_home(h, &p.home))
+                .map(|(_, a)| *a)
+                .collect();
+            // The fact comes from ProfileList's hive, or else from the folder's first hive.
+            let Some(from) = (if p.listed {
+                software
+            } else {
+                mine.first().copied()
+            }) else {
+                continue;
+            };
+            let hive_list: Vec<String> = mine
+                .iter()
+                .map(|a| {
+                    format!(
+                        r#"{{"kind": {}, "path": {}}}"#,
+                        json_str(a.kind.as_str()),
+                        json_str(a.locator.steps().last().map_or("", |s| s.id.as_str()))
+                    )
+                })
+                .collect();
+            let attrs = format!(
+                r#"{{"sid": {}, "name": {}, "home": {}, "in_profile_list": {}, "hives": [{}]}}"#,
+                p.sid.as_deref().map_or("null".into(), json_str),
+                json_str(p.home.rsplit('/').next().unwrap_or("")),
+                json_str(&p.home),
+                p.listed,
+                hive_list.join(", ")
+            );
             ctx.sink.fact(
                 &self.manifest().id,
                 ctx.system.id,
                 NewFact {
-                    id: FactId::derive(&a.source.to_string(), &a.locator, &fact_kind, name),
-                    source: a.source,
+                    id: FactId::derive(
+                        &from.source.to_string(),
+                        &from.locator,
+                        &fact_kind,
+                        &p.subject,
+                    ),
+                    source: from.source,
                     kind: fact_kind.clone(),
-                    subject: name.to_string(),
-                    attrs: None,
+                    subject: p.subject.clone(),
+                    attrs: Some(attrs),
                 },
             );
             n += 1;
@@ -324,5 +461,116 @@ mod tests {
             ]
         );
         assert_eq!(log.all()[0].outcome, Outcome::Ok(10));
+    }
+
+    #[derive(Default)]
+    struct Profiles(Vec<(String, String)>);
+
+    impl Sink for Profiles {
+        fn emit(&mut self, _: &Kind, _: &Kind, _: String) {}
+        fn fact(&mut self, _: &Kind, _: SystemId, f: NewFact) {
+            self.0.push((f.subject, f.attrs.unwrap_or_default()));
+        }
+        fn event(&mut self, _: &Kind, _: SystemId, _: af_core::runner::NewEvent) {}
+        fn link(&mut self, _: &Kind, _: af_core::runner::NewLink) {}
+    }
+
+    #[test]
+    fn profiles_come_from_profile_list_with_their_hives() {
+        use crate::registry::tests::utf16z;
+        use crate::registry::{REG_EXPAND_SZ, REG_SZ};
+        let list = "Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
+        let mut reg = af_core::capability::FakeRegistry::new();
+        reg.set(
+            "windows.software",
+            list,
+            "Default",
+            REG_EXPAND_SZ,
+            &utf16z("%SystemDrive%\\Users\\Default"),
+        )
+        .set(
+            "windows.software",
+            list,
+            "Public",
+            REG_EXPAND_SZ,
+            &utf16z("%SystemDrive%\\Users\\Public"),
+        )
+        .set(
+            "windows.software",
+            &format!("{list}\\S-1-5-21-1-2-3-1001"),
+            "ProfileImagePath",
+            REG_EXPAND_SZ,
+            &utf16z("C:\\Users\\jcloudy"),
+        )
+        .set(
+            "windows.software",
+            &format!("{list}\\S-1-5-19"),
+            "ProfileImagePath",
+            REG_SZ,
+            &utf16z("%systemroot%\\ServiceProfiles\\LocalService"),
+        );
+        let art = |kind: &str, path: &str| Artifact {
+            kind: Kind::new(kind).unwrap(),
+            locator: Locator::root("source.image", "1")
+                .child("volume.gpt", "4")
+                .child("fs.path", path),
+            source: SourceId(1),
+            system: Some(SystemId(1)),
+            sha256: path.into(),
+        };
+        let artifacts = vec![
+            art("windows.hive.software", "Windows/System32/config/SOFTWARE"),
+            art("windows.hive.ntuser", "Users/jcloudy/NTUSER.DAT"),
+            art(
+                "windows.hive.usrclass",
+                "Users/jcloudy/AppData/Local/Microsoft/Windows/UsrClass.dat",
+            ),
+            art("windows.hive.ntuser", "Users/Default/NTUSER.DAT"),
+            art("windows.hive.ntuser", "Users/old/NTUSER.DAT"),
+            art(
+                "windows.hive.ntuser",
+                "Windows/ServiceProfiles/LocalService/NTUSER.DAT",
+            ),
+        ];
+        let sys = System {
+            id: SystemId(1),
+            family: Family::Windows,
+            label: None,
+            parent: None,
+            volumes: vec![],
+            views: vec![],
+        };
+        let caps = Capabilities {
+            registry: Some(&reg),
+        };
+        let targets = [Target::new(&sys, caps, artifacts, None)];
+        let mut sink = Profiles::default();
+        run(
+            &[&UserProfiles],
+            &targets,
+            &mut sink,
+            &mut af_core::plugin::OutcomeLog::new(),
+            &mut af_core::runner::RunLog::new(),
+        );
+        sink.0.sort();
+        let got: Vec<&str> = sink.0.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(
+            got,
+            ["S-1-5-19", "S-1-5-21-1-2-3-1001", "old"],
+            "Default is the template"
+        );
+        assert_eq!(
+            sink.0[1].1,
+            r#"{"sid": "S-1-5-21-1-2-3-1001", "name": "jcloudy", "home": "Users/jcloudy", "in_profile_list": true, "hives": [{"kind": "windows.hive.ntuser", "path": "Users/jcloudy/NTUSER.DAT"}, {"kind": "windows.hive.usrclass", "path": "Users/jcloudy/AppData/Local/Microsoft/Windows/UsrClass.dat"}]}"#
+        );
+        assert!(
+            sink.0[0]
+                .1
+                .contains(r#""home": "Windows/ServiceProfiles/LocalService""#)
+        );
+        assert!(
+            sink.0[2].1.contains(r#""sid": null"#)
+                && sink.0[2].1.contains(r#""in_profile_list": false"#)
+        );
     }
 }

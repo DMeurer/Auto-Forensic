@@ -74,11 +74,11 @@ fn project_canary() {
     // Absent inputs are reported clearly, and told apart from inputs with nothing in them.
     let status = af(&["status", c]);
     assert!(
-        status.contains("windows.user_profiles v1: not in this project"),
+        status.contains("windows.user_profiles v2: not in this project"),
         "{status}"
     );
     assert!(
-        status.contains("windows.user_profiles v1: present, nothing relevant"),
+        status.contains("windows.user_profiles v2: present, nothing relevant"),
         "{status}"
     );
     let links_before = links(&db);

@@ -6,8 +6,8 @@
 //! and to the names Windows shows is the Windows crate's business, so core never mentions a
 //! Windows root key. Key names compare without case, as in every registry.
 //!
-//! [`FakeRegistry`] is an in-memory registry for tests and fixtures. The real one, on `notatin`,
-//! comes with the registry plugins.
+//! [`FakeRegistry`] is an in-memory registry for tests and fixtures. The real one is Windows's
+//! `HiveRegistry`, on `notatin` (R1), which a system's profile offers to plugins during a run.
 
 use crate::names::Kind;
 use crate::path::{CasePolicy, Name, NameKind, ViewPath};

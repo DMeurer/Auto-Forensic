@@ -57,6 +57,8 @@ enum Command {
     Status { project: PathBuf },
     /// Run the compiled-in plugins on a project. Unchanged inputs aren't extracted again.
     Run { project: PathBuf },
+    /// Each system's users with their hives, as the last run found them.
+    Users { project: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -188,7 +190,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(out, "plugins:  {} compiled in", PLUGINS.len())?;
         }
         Command::Run { project } => {
-            let r = af_store::run::run_project(&project, PLUGINS)?;
+            let r = af_store::run::run_project(&project, PLUGINS, PROFILES)?;
             writeln!(
                 out,
                 "ran {} plugins on {} systems: {} extracted, {} events loaded",
@@ -197,6 +199,53 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 r.extracted,
                 r.events_loaded
             )?;
+        }
+        Command::Users { project } => {
+            let p = Project::open_read_only(&project, wait())?;
+            let mut facts = p.store.facts()?;
+            facts.sort_by(|a, b| a.subject.cmp(&b.subject));
+            for s in p.systems()? {
+                let label = s
+                    .label
+                    .as_deref()
+                    .map(|l| format!(" {l}"))
+                    .unwrap_or_default();
+                writeln!(out, "system {} ({}){label}", s.id, s.family)?;
+                for f in facts.iter().filter(|f| {
+                    f.system == s.id.0
+                        && matches!(f.kind.as_str(), "windows.user_profile" | "unix.user")
+                }) {
+                    let a: serde_json::Value = f
+                        .attrs
+                        .as_deref()
+                        .and_then(|t| serde_json::from_str(t).ok())
+                        .unwrap_or_default();
+                    let text =
+                        |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let mark = if a.get("in_profile_list") == Some(&serde_json::Value::Bool(false))
+                    {
+                        "  (folder only, not in ProfileList)"
+                    } else {
+                        ""
+                    };
+                    writeln!(
+                        out,
+                        "  {}  {}  {}{mark}",
+                        f.subject,
+                        text("name"),
+                        text("home")
+                    )?;
+                    for h in a
+                        .get("hives")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        let field = |k: &str| h.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                        writeln!(out, "    {}  {}", field("kind"), field("path"))?;
+                    }
+                }
+            }
         }
         Command::Status { project } => {
             write!(

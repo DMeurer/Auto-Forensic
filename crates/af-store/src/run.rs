@@ -190,8 +190,13 @@ fn family(name: &str) -> Family {
     }
 }
 
-/// Runs `plugins` on the project in `dir`.
-pub fn run_project(dir: &Path, plugins: &[&dyn Plugin]) -> Result<RunSummary, ProjectError> {
+/// Runs `plugins` on the project in `dir`. Each system's profile from `profiles` offers its
+/// capabilities, such as a Windows system's registry.
+pub fn run_project(
+    dir: &Path,
+    plugins: &[&dyn Plugin],
+    profiles: &[&dyn af_core::profile::OsProfile],
+) -> Result<RunSummary, ProjectError> {
     // 1. Read the project, run, spool.
     let reader = Project::open_read_only(dir, std::time::Duration::from_secs(30))?;
     let systems: Vec<System> = reader
@@ -216,15 +221,33 @@ pub fn run_project(dir: &Path, plugins: &[&dyn Plugin]) -> Result<RunSummary, Pr
     let run_dir = reader.temp.run_dir()?;
     drop(reader);
 
-    let targets: Vec<Target<'_>> = systems
+    let per_system: Vec<Vec<Artifact>> = systems
         .iter()
         .map(|s| {
-            let artifacts = index
+            index
                 .all()
                 .filter(|a| a.system == Some(s.id))
                 .cloned()
-                .collect();
-            Target::new(s, Capabilities::default(), artifacts, Some(&opener))
+                .collect()
+        })
+        .collect();
+    let registries: Vec<_> = systems
+        .iter()
+        .zip(&per_system)
+        .map(|(s, artifacts)| {
+            af_core::profile::profile_for(&s.family, profiles)
+                .and_then(|p| p.registry(artifacts, &opener))
+        })
+        .collect();
+    let targets: Vec<Target<'_>> = systems
+        .iter()
+        .zip(per_system)
+        .zip(&registries)
+        .map(|((s, artifacts), reg)| {
+            let caps = Capabilities {
+                registry: reg.as_deref(),
+            };
+            Target::new(s, caps, artifacts, Some(&opener))
         })
         .collect();
     let mut sink = SpoolSink {
@@ -394,7 +417,7 @@ mod tests {
             },
             extracts: AtomicUsize::new(0),
         };
-        let first = run_project(&dir, &[&plugin]).unwrap();
+        let first = run_project(&dir, &[&plugin], &[]).unwrap();
         assert_eq!((first.extracted, first.events_loaded), (1, 2));
         let p = Project::open_read_only(&dir, std::time::Duration::from_secs(1)).unwrap();
         let events = p.store.events().unwrap();
@@ -411,7 +434,7 @@ mod tests {
         );
         drop(p);
 
-        let second = run_project(&dir, &[&plugin]).unwrap();
+        let second = run_project(&dir, &[&plugin], &[]).unwrap();
         assert_eq!((second.extracted, second.events_loaded), (0, 0));
         assert_eq!(
             plugin.extracts.load(Ordering::SeqCst),

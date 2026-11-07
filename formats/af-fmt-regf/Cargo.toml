@@ -1,6 +1,6 @@
 [package]
 name = "af-fmt-regf"
-description = "Registry hive (regf) reading from bytes: header and the root key's subkey names."
+description = "Registry hive (regf) reading from bytes: root key names, and keys and values with log replay on notatin."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,8 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# notatin (Apache-2.0) at the commit stage 1 tested (T7), for full key and value reading with
+# transaction-log replay (R1).
+notatin = { git = "https://github.com/strozfriedberg/notatin", rev = "ae3a70611bc37b2ca04637671ceb14ccab9d5a87" }
