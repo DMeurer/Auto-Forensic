@@ -1,7 +1,7 @@
 # A test workspace for `cargo xtask check`. It breaks every rule once on purpose.
 [workspace]
 resolver = "3"
-members = ["crates/*", "formats/*", "os/*", "vendor/*"]
+members = ["crates/*", "formats/*", "fs/*", "os/*", "vendor/*"]
 
 [workspace.package]
 version = "0.0.0"

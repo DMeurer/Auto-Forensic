@@ -1,0 +1,9 @@
+[package]
+name = "af-fs-demo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+af-core = { path = "../../crates/af-core" } # allowed
+af-host = { path = "../../crates/af-host" } # breaks the fs rule

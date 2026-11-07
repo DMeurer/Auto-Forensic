@@ -44,6 +44,15 @@ name = "af-fmt-volume"
 version = "0.0.0"
 
 [[package]]
+name = "af-fs-ntfs"
+version = "0.0.0"
+dependencies = [
+ "af-core",
+ "af-host",
+ "ntfs-core",
+]
+
+[[package]]
 name = "af-host"
 version = "0.0.0"
 dependencies = [
@@ -461,7 +470,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -696,7 +707,7 @@ dependencies = [
  "lru",
  "md-5",
  "rayon",
- "safe-read",
+ "safe-read 0.2.3",
  "sha-1",
  "thiserror",
 ]
@@ -757,6 +768,31 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "forensicnomicon"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b644b342c6bc8b81d33a173542042baba336764c85429536ececd437c44c26aa"
+dependencies = [
+ "forensicnomicon-core",
+ "forensicnomicon-data",
+]
+
+[[package]]
+name = "forensicnomicon-core"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b246d2a6b4b0ccc60485626363ce41437cf7c8276a4d08ce888bdada63c2c35"
+
+[[package]]
+name = "forensicnomicon-data"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1af1e5fc4a0cdafce257a88d807f4599b4cf204d6631be87ded01b5c0442d8c5"
+dependencies = [
+ "forensicnomicon-core",
+]
 
 [[package]]
 name = "futures-core"
@@ -1048,6 +1084,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lznt1"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a991092331e953f600e3c13058504e1002ddf3ebb0b326a7b28d19b7ce681624"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1071,6 +1116,19 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "ntfs-core"
+version = "0.9.8"
+source = "git+https://github.com/DMeurer/ntfs-forensic?rev=bfc162f5945d3de71750cd83dcbd0b73cf49685d#bfc162f5945d3de71750cd83dcbd0b73cf49685d"
+dependencies = [
+ "bitflags",
+ "chrono",
+ "forensicnomicon",
+ "lznt1",
+ "safe-read 0.1.0",
+ "thiserror",
 ]
 
 [[package]]
@@ -1232,6 +1290,12 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe-read"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4487a19fd870fa418cd95a218049eeb70514535bf2271715774d97d7caab1ce5"
 
 [[package]]
 name = "safe-read"

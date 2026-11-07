@@ -12,6 +12,7 @@ Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-M
 | `crates/af-host` | Everything that touches the machine the tool runs on | The one place for temp paths and opening a browser |
 | `crates/af-cli` | The `af` command | |
 | `formats/af-fmt-*` | One crate per file format | Takes bytes. No `std::fs`, `std::path`, `std::env`, `std::process`, `std::os` or `std::net`, and no dependency outside `formats/` except external non-OS crates |
+| `fs/af-fs-*` | One crate per file system, implementing af-core's `FileSystem` | Reads volumes as af-core byte sources. Same `std` limits as formats; may depend on af-core, format crates and external non-OS crates, never on af-host, af-store or an `os/` crate |
 | `os/af-windows` | Windows profile and plugins | May name Windows things. Other `os/` crates may not |
 | `xtask` | Repository checks | |
 

@@ -57,6 +57,8 @@ const SCANNED_EXTENSIONS: &[&str] = &["rs", "toml", "sql", "yaml", "yml", "json"
 enum Layer {
     Core,
     Format,
+    /// `fs/`: file system adapters, which read volumes as af-core byte sources.
+    FileSystem,
     WindowsOs,
     OtherOs,
     Tool,
@@ -135,15 +137,20 @@ fn check(root: &Path) -> Result<Vec<Violation>, Box<dyn std::error::Error>> {
             .parent()
             .map(|d| d.as_std_path().to_path_buf())
             .unwrap_or_default();
-        if layer == Layer::Format {
+        let bytes_rule = match layer {
+            Layer::Format => Some(("format-takes-bytes", "format crate")),
+            Layer::FileSystem => Some(("fs-reads-sources", "file system crate")),
+            _ => None,
+        };
+        if let Some((rule, what)) = bytes_rule {
             for file in files(&dir.join("src"), &["rs"]) {
                 let text = std::fs::read_to_string(&file)?;
                 for (line, module) in format_std_uses(&text) {
                     v.push(Violation {
                         path: rel(&root, &file),
                         line,
-                        rule: "format-takes-bytes",
-                        message: format!("format crate `{}` uses `std::{module}`", pkg.name),
+                        rule,
+                        message: format!("{what} `{}` uses `std::{module}`", pkg.name),
                     });
                 }
             }
@@ -224,6 +231,7 @@ fn classify(meta: &Metadata, root: &Path) -> HashMap<PackageId, Layer> {
             let name = p.name.to_string();
             let layer = match top {
                 "formats" => Layer::Format,
+                "fs" => Layer::FileSystem,
                 "os" if name.starts_with("af-windows") => Layer::WindowsOs,
                 "os" => Layer::OtherOs,
                 "xtask" => Layer::Tool,
@@ -291,6 +299,28 @@ fn dependency_rules(
                             line: 0,
                             rule: "format-takes-bytes",
                             message: format!("format crate `{}` depends on `{dname}`", name_of[id]),
+                        });
+                    }
+                }
+            }
+            Layer::FileSystem => {
+                // af-core, format crates and outside crates; never the host, the store or an OS.
+                for d in deps.get(id).into_iter().flatten() {
+                    let dname = &name_of[d];
+                    let bad = match layers.get(*d) {
+                        Some(Layer::Core | Layer::Format | Layer::FileSystem) => false,
+                        Some(_) => true,
+                        None => OS_CRATES.contains(&dname.as_str()),
+                    };
+                    if bad {
+                        v.push(Violation {
+                            path: manifest(id),
+                            line: 0,
+                            rule: "fs-reads-sources",
+                            message: format!(
+                                "file system crate `{}` depends on `{dname}`",
+                                name_of[id]
+                            ),
                         });
                     }
                 }
@@ -547,6 +577,8 @@ mod tests {
             "formats/af-fmt-demo/Cargo.toml:0: [format-takes-bytes] format crate `af-fmt-demo` depends on `af-host`",
             "formats/af-fmt-demo/src/lib.rs:2: [format-takes-bytes] format crate `af-fmt-demo` uses `std::fs`",
             "formats/af-fmt-demo/src/lib.rs:3: [format-takes-bytes] format crate `af-fmt-demo` uses `std::path`",
+            "fs/af-fs-demo/Cargo.toml:0: [fs-reads-sources] file system crate `af-fs-demo` depends on `af-host`",
+            "fs/af-fs-demo/src/lib.rs:2: [fs-reads-sources] file system crate `af-fs-demo` uses `std::fs`",
         ];
         assert_eq!(got, want);
     }

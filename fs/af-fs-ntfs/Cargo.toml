@@ -1,0 +1,19 @@
+[package]
+name = "af-fs-ntfs"
+description = "NTFS as an af-core FileSystem, on our ntfs-core fork."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+af-core.workspace = true
+# Our fork of ntfs-core (Apache-2.0), branch `af`: see fs/README.md.
+ntfs-core = { git = "https://github.com/DMeurer/ntfs-forensic", rev = "bfc162f5945d3de71750cd83dcbd0b73cf49685d" }
+
+[dev-dependencies]
+af-host.workspace = true
+
+[lints]
+workspace = true

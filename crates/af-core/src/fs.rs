@@ -125,6 +125,9 @@ pub struct EntryName {
     pub name: Name,
     /// `ntfs.name.win32`, `ntfs.name.dos`, `fat.name.long`, `fs.name`.
     pub kind: Kind,
+    /// A second spelling of another name in the same folder (an NTFS 8.3 short name): it is
+    /// listed and found by lookup, but paths are built from the long names.
+    pub alias: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -169,7 +172,8 @@ impl EntryPath {
 /// Folder chains longer than this are taken as loops.
 const MAX_DEPTH: usize = 4096;
 
-/// Every path of an entry, one per name. The root has one empty path.
+/// Every path of an entry, one per name that isn't an alias (hard links give several). Folders
+/// on the way are named by their first long name. The root has one empty path.
 pub fn paths(fs: &dyn FileSystem, entry: &Entry) -> io::Result<Vec<EntryPath>> {
     let root = fs.root();
     if entry.id == root {
@@ -179,7 +183,13 @@ pub fn paths(fs: &dyn FileSystem, entry: &Entry) -> io::Result<Vec<EntryPath>> {
         }]);
     }
     let mut out = Vec::new();
-    for n in &entry.names {
+    let long: Vec<&EntryName> = entry.names.iter().filter(|n| !n.alias).collect();
+    let own = if long.is_empty() {
+        entry.names.iter().collect()
+    } else {
+        long
+    };
+    for n in own {
         let (mut names, mut at, mut seen) =
             (vec![n.name.clone()], n.parent.clone(), HashSet::new());
         let orphan = loop {
@@ -190,7 +200,14 @@ pub fn paths(fs: &dyn FileSystem, entry: &Entry) -> io::Result<Vec<EntryPath>> {
                 break true;
             }
             let parent = fs.entry(&at)?;
-            match parent.as_ref().and_then(|p| p.names.first()) {
+            let first_long = |p: &Entry| {
+                p.names
+                    .iter()
+                    .find(|n| !n.alias)
+                    .or(p.names.first())
+                    .cloned()
+            };
+            match parent.as_ref().and_then(first_long) {
                 Some(pn) if parent.as_ref().is_some_and(|p| p.kind == EntryKind::Folder) => {
                     names.push(pn.name.clone());
                     at = pn.parent.clone();
@@ -460,6 +477,7 @@ impl FakeFs {
             parent: parent.clone(),
             name: Name::from_text(name, NameKind::Utf16),
             kind: kind("fs.name"),
+            alias: false,
         }
     }
 
@@ -492,6 +510,14 @@ impl FakeFs {
     /// A second name for an entry (a hard link).
     pub fn link(&mut self, id: &FileId, parent: &FileId, name: &str) {
         self.get(id).0.names.push(Self::name(parent, name));
+    }
+
+    /// A short alias for an entry in the same folder as its first name (an 8.3 name).
+    pub fn alias(&mut self, id: &FileId, name: &str) {
+        let e = &mut self.get(id).0;
+        let mut n = Self::name(&e.names[0].parent, name);
+        n.alias = true;
+        e.names.push(n);
     }
 
     /// Sets a time; `name` must be `fake.modified` or `fake.created`.
@@ -578,6 +604,8 @@ mod tests {
         );
         f.time(&ntuser, "fake.created", Time::from_ticks_1601(0)); // stored zero
         f.link(&ntuser, &root, "hardlink.dat");
+        f.alias(&users, "USERS~1");
+        f.alias(&ntuser, "NTUSER~1.DAT");
         f.stream(
             &ntuser,
             StreamName::Named(Name::from_text("Zone.Identifier", NameKind::Utf16)),
@@ -639,12 +667,15 @@ mod tests {
     fn deleted_entries_are_in_all_but_not_in_list() {
         let (f, [root, users, ntuser, gone, ..]) = sample();
         let listed: Vec<FileId> = f.list(&users).unwrap().into_iter().map(|x| x.1).collect();
-        assert_eq!(listed, std::slice::from_ref(&ntuser));
+        assert!(
+            listed.contains(&ntuser) && !listed.contains(&gone),
+            "{listed:?}"
+        );
         assert!(f.all().any(|e| e.unwrap().id == gone));
         assert_eq!(
             f.list(&root).unwrap().len(),
-            2,
-            "Users and the hard link; Temp is purged"
+            3,
+            "Users, its 8.3 alias and the hard link; Temp is purged"
         );
     }
 
@@ -679,7 +710,15 @@ mod tests {
             "deleted files aren't found by path"
         );
         assert_eq!(v.read(&p("Users/NTUSER.DAT")).unwrap(), b"regf....");
-        assert_eq!(v.list(&p("Users")).len(), 1);
+        assert_eq!(
+            v.list(&p("Users")).len(),
+            2,
+            "the long name and the 8.3 alias"
+        );
+        assert!(
+            v.exists(&p("USERS~1/NTUSER~1.DAT")),
+            "aliases are found by lookup"
+        );
         assert_eq!(v.label().as_deref(), Some("FAKE"));
     }
 }
