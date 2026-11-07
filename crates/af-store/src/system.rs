@@ -37,7 +37,8 @@ pub struct MergeSuggestion {
 impl Project {
     /// Detects the systems in a folder or archive source with `profiles` (C1, I22), records each
     /// as a system of that source with its identity, and adds the artifacts each profile knows by
-    /// path to the artifact index. A source nothing claims becomes one `none` system.
+    /// path to the artifact index. A source nothing claims becomes one `none` system. Drive
+    /// folders at the top (`C/Windows/...`, as KAPE writes them) are each a volume of their own.
     pub fn add_folder_systems(
         &mut self,
         source: &crate::source::SourceInfo,
@@ -46,7 +47,7 @@ impl Project {
         use af_core::artifact::Artifact;
         use af_core::bytes::Locator;
         use af_core::fs::{FileSystem, FsVolume, StreamName};
-        use af_core::system::{ViewId, VolumeId, VolumeProbe};
+        use af_core::system::{SubVolume, ViewId, VolumeId, VolumeProbe};
         let folder = af_host::folder::FolderVolume::new(VolumeId(source.id.0), &source.files[0]);
         let archive = match source.kind.as_str() {
             "archive" => Some(crate::run::open_archive(source)?),
@@ -56,10 +57,24 @@ impl Project {
             id: VolumeId(source.id.0),
             fs,
         });
-        let vols: [&dyn VolumeProbe; 1] = [match &in_archive {
+        let base: &dyn VolumeProbe = match &in_archive {
             Some(v) => v,
             None => &folder,
-        }];
+        };
+        let drives: Vec<SubVolume> = af_core::system::drive_folders(base)
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| SubVolume {
+                id: VolumeId(source.id.0.wrapping_add(i as u128 + 1)),
+                inner: base,
+                root: af_core::path::ViewPath::new(vec![name]),
+            })
+            .collect();
+        let vols: Vec<&dyn VolumeProbe> = if drives.is_empty() {
+            vec![base]
+        } else {
+            drives.iter().map(|d| d as &dyn VolumeProbe).collect()
+        };
         let (systems, identities) = af_core::profile::build_systems(
             &vols,
             profiles,
@@ -77,7 +92,11 @@ impl Project {
                 &identity.facts,
             )?;
             if let Some(profile) = af_core::profile::profile_for(&sys.family, profiles) {
-                for (_, path, kind) in profile.index(sys, &vols) {
+                for (vol, path, kind) in profile.index(sys, &vols) {
+                    let path = match drives.iter().find(|d| d.id == vol) {
+                        Some(d) => d.full(&path),
+                        None => path,
+                    };
                     let sha256 = match (&in_archive, &archive) {
                         (Some(v), Some(fs)) => {
                             let Some(data) = v

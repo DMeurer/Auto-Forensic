@@ -115,6 +115,60 @@ pub trait VolumeProbe {
     }
 }
 
+/// A folder of another volume seen as a volume of its own, such as a drive folder (`C`) of a
+/// KAPE collection.
+pub struct SubVolume<'a> {
+    pub id: VolumeId,
+    pub inner: &'a dyn VolumeProbe,
+    pub root: ViewPath,
+}
+
+impl SubVolume<'_> {
+    /// A path of this volume as a path of the inner one.
+    pub fn full(&self, path: &ViewPath) -> ViewPath {
+        ViewPath::new(
+            self.root
+                .names()
+                .iter()
+                .chain(path.names())
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+impl VolumeProbe for SubVolume<'_> {
+    fn id(&self) -> VolumeId {
+        self.id
+    }
+    fn exists(&self, path: &ViewPath) -> bool {
+        self.inner.exists(&self.full(path))
+    }
+    fn case(&self) -> CasePolicy {
+        self.inner.case()
+    }
+    fn read(&self, path: &ViewPath) -> Option<Vec<u8>> {
+        self.inner.read(&self.full(path))
+    }
+    fn list(&self, dir: &ViewPath) -> Vec<Name> {
+        self.inner.list(&self.full(dir))
+    }
+}
+
+/// The folders at the top of a volume named by one drive letter (`C`, `d`), as a collection
+/// tool such as KAPE writes them: each one is a drive of its own.
+pub fn drive_folders(vol: &dyn VolumeProbe) -> Vec<Name> {
+    vol.list(&ViewPath::default())
+        .into_iter()
+        .filter(|n| {
+            let d = n.display();
+            d.len() == 1
+                && d.as_bytes()[0].is_ascii_alphabetic()
+                && !vol.list(&ViewPath::new(vec![n.clone()])).is_empty()
+        })
+        .collect()
+}
+
 /// An in-memory volume that only knows which paths exist, for tests and fixtures. Paths are
 /// written with `/` between names.
 #[derive(Debug, Clone)]

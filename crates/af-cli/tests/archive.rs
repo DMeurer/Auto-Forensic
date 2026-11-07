@@ -1,6 +1,7 @@
 //! I22: one Windows tree added as a folder, a zip and a tar gives the same system, the same
-//! indexed hives (kind, path and SHA-256) and the same events. The zip is made by Python's
-//! `zipfile`, the tar by the system `tar`; each is skipped when its tool is missing.
+//! indexed hives (kind, path and SHA-256) and the same events, at the root and in a KAPE layout
+//! with the drive folder `C` on top. The zip is made by Python's `zipfile`, the tar by the system
+//! `tar`; each is skipped when its tool is missing.
 
 use af_store::Store;
 use std::collections::BTreeSet;
@@ -25,8 +26,13 @@ fn write(base: &Path, path: &str, data: &[u8]) {
     std::fs::write(base.join(path), data).unwrap();
 }
 
-/// (kind, path below the source, SHA-256) of every indexed artifact, and the number of events.
-fn added(parent: &Path, name: &str, source: &Path) -> (BTreeSet<(String, String, String)>, i64) {
+/// (kind, path below the source, SHA-256) of every indexed artifact, the number of events, and
+/// the systems' families.
+fn added(
+    parent: &Path,
+    name: &str,
+    source: &Path,
+) -> (BTreeSet<(String, String, String)>, i64, Vec<String>) {
     let case = parent.join(name);
     let c = case.to_str().unwrap();
     af(&["project", "new", c]);
@@ -54,7 +60,16 @@ fn added(parent: &Path, name: &str, source: &Path) -> (BTreeSet<(String, String,
         .connection()
         .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
         .unwrap();
-    (hives, events)
+    let mut stmt = db
+        .connection()
+        .prepare("SELECT family FROM systems ORDER BY family")
+        .unwrap();
+    let families = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<String>, _>>()
+        .unwrap();
+    (hives, events, families)
 }
 
 fn tool(names: &[&'static str]) -> Option<&'static str> {
@@ -66,40 +81,57 @@ fn tool(names: &[&'static str]) -> Option<&'static str> {
     })
 }
 
-#[test]
-fn a_zip_and_a_tar_give_the_same_hives_as_the_folder() {
-    let parent = std::env::temp_dir().join(format!("af-archive-{}", std::process::id()));
+/// Builds one Windows tree with `prefix` before every path, adds it as a folder, a zip and a
+/// tar, and checks all three give a Windows system with the same hives and events.
+fn three_ways(parent: &Path, prefix: &str) {
     let tree = parent.join("collection");
-    write(
-        &tree,
-        "Windows/System32/config/SYSTEM",
-        &af_fmt_regf::build_test_hive(&["MountedDevices", "Select"], "lh"),
-    );
-    write(
-        &tree,
-        "Windows/System32/config/SOFTWARE",
-        &af_fmt_regf::build_test_hive(&["Microsoft"], "lh"),
-    );
-    write(
-        &tree,
-        "Users/admin/NTUSER.DAT",
-        &af_fmt_regf::build_test_hive(&["Control Panel", "Software"], "lh"),
-    );
-    let folder = added(&parent, "from-folder", &tree);
+    let hive = |roots: &[&str]| af_fmt_regf::build_test_hive(roots, "lh");
+    for (path, data) in [
+        (
+            "Windows/System32/config/SYSTEM",
+            hive(&["MountedDevices", "Select"]),
+        ),
+        ("Windows/System32/config/SOFTWARE", hive(&["Microsoft"])),
+        (
+            "Users/admin/NTUSER.DAT",
+            hive(&["Control Panel", "Software"]),
+        ),
+    ] {
+        write(&tree, &format!("{prefix}{path}"), &data);
+    }
+    if !prefix.is_empty() {
+        // KAPE writes its logs next to the drive folders.
+        write(
+            &tree,
+            "2026-11-07_CopyLog.csv",
+            b"SourceFile,DestinationFile\n",
+        );
+    }
+    let folder = added(parent, "from-folder", &tree);
     assert_eq!(folder.0.len(), 3, "{:?}", folder.0);
+    assert!(
+        folder.0.iter().all(|h| h.1.starts_with(prefix)),
+        "{:?}",
+        folder.0
+    );
+    assert_eq!(folder.2, ["windows"]);
     assert!(folder.1 > 0);
 
     if let Some(py) = tool(&["python3", "python"]) {
         let zip = parent.join("collection.zip");
+        let top: Vec<_> = std::fs::read_dir(&tree)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         let ok = Command::new(py)
             .current_dir(&tree)
             .args(["-I", "-m", "zipfile", "-c"])
             .arg(&zip)
-            .args(["Windows", "Users"])
+            .args(&top)
             .status()
             .unwrap();
         assert!(ok.success());
-        assert_eq!(added(&parent, "from-zip", &zip), folder, "zip");
+        assert_eq!(added(parent, "from-zip", &zip), folder, "zip");
     }
     if tool(&["tar"]).is_some() {
         let tar = parent.join("collection.tar");
@@ -112,7 +144,20 @@ fn a_zip_and_a_tar_give_the_same_hives_as_the_folder() {
             .status()
             .unwrap();
         assert!(ok.success());
-        assert_eq!(added(&parent, "from-tar", &tar), folder, "tar");
+        assert_eq!(added(parent, "from-tar", &tar), folder, "tar");
     }
+}
+
+#[test]
+fn a_zip_and_a_tar_give_the_same_hives_as_the_folder() {
+    let parent = std::env::temp_dir().join(format!("af-archive-{}", std::process::id()));
+    three_ways(&parent, "");
+    std::fs::remove_dir_all(&parent).ok();
+}
+
+#[test]
+fn a_kape_collection_gives_its_drive_folder_as_the_windows_volume() {
+    let parent = std::env::temp_dir().join(format!("af-kape-{}", std::process::id()));
+    three_ways(&parent, "C/");
     std::fs::remove_dir_all(&parent).ok();
 }
