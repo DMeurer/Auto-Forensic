@@ -293,8 +293,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         None => writeln!(out, "kind   unknown; name it with --as KIND")?,
                     }
                     writeln!(out, "system {sys} ({})", family.as_str())?;
-                } else if s.kind == "folder" || s.kind == "archive" {
-                    for sys in p.add_folder_systems(&s, PROFILES)? {
+                } else {
+                    for sys in p.add_systems(&s, PROFILES)? {
                         writeln!(out, "system {sys}")?;
                     }
                 }

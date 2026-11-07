@@ -43,6 +43,17 @@ impl Detector for WindowsProfile {
     }
 }
 
+/// `rest` (names with `/` between) below `base`.
+fn below(base: &ViewPath, rest: &str) -> ViewPath {
+    ViewPath::new(
+        base.names()
+            .iter()
+            .chain(MemVolume::path(rest).names())
+            .cloned()
+            .collect(),
+    )
+}
+
 impl OsProfile for WindowsProfile {
     fn family(&self) -> Family {
         Family::Windows
@@ -73,7 +84,8 @@ impl OsProfile for WindowsProfile {
         }]
     }
 
-    /// The config hives on the system volume.
+    /// On the system volume: the config hives, Amcache, each user's NTUSER.DAT and UsrClass.dat,
+    /// the event logs and the Prefetch files. Names match by the volume's case rules.
     fn index(
         &self,
         system: &System,
@@ -82,35 +94,48 @@ impl OsProfile for WindowsProfile {
         let Some(vol) = system_volumes(system, volumes).into_iter().next() else {
             return Vec::new();
         };
-        let mut found: Vec<(VolumeId, ViewPath, Kind)> = [
+        let kind = |k: &str| Kind::new(k).expect("valid kind");
+        let mut found = Vec::new();
+        let mut known = |path: ViewPath, k: &str| {
+            if vol.exists(&path) {
+                found.push((vol.id(), path, kind(k)));
+            }
+        };
+        for (file, k) in [
             ("SYSTEM", "windows.hive.system"),
             ("SOFTWARE", "windows.hive.software"),
             ("SAM", "windows.hive.sam"),
             ("SECURITY", "windows.hive.security"),
-        ]
-        .into_iter()
-        .map(|(file, kind)| {
-            (
+            ("DEFAULT", "windows.hive.default"),
+        ] {
+            known(
                 MemVolume::path(&format!("Windows/System32/config/{file}")),
-                kind,
-            )
-        })
-        .filter(|(p, _)| vol.exists(p))
-        .map(|(p, kind)| (vol.id(), p, Kind::new(kind).expect("valid kind")))
-        .collect();
-        // Each user profile's NTUSER.DAT.
+                k,
+            );
+        }
+        known(
+            MemVolume::path("Windows/AppCompat/Programs/Amcache.hve"),
+            "windows.hive.amcache",
+        );
         let users = MemVolume::path("Users");
         for user in vol.list(&users) {
-            let ntuser = users.join(user).join(af_core::path::Name::from_text(
-                "NTUSER.DAT",
-                af_core::path::NameKind::Utf16,
-            ));
-            if vol.exists(&ntuser) {
-                found.push((
-                    vol.id(),
-                    ntuser,
-                    Kind::new("windows.hive.ntuser").expect("valid kind"),
-                ));
+            let home = users.join(user);
+            known(below(&home, "NTUSER.DAT"), "windows.hive.ntuser");
+            known(
+                below(&home, "AppData/Local/Microsoft/Windows/UsrClass.dat"),
+                "windows.hive.usrclass",
+            );
+        }
+        // Listed names exist, so they skip the lookup.
+        for (dir, ext, k) in [
+            ("Windows/System32/winevt/Logs", ".evtx", "windows.evtx"),
+            ("Windows/Prefetch", ".pf", "windows.prefetch"),
+        ] {
+            let dir = MemVolume::path(dir);
+            for name in vol.list(&dir) {
+                if name.display().to_lowercase().ends_with(ext) {
+                    found.push((vol.id(), dir.join(name), kind(k)));
+                }
             }
         }
         found
@@ -229,6 +254,57 @@ mod tests {
             assert_eq!(s.family, Family::Windows);
             assert_eq!(s.views[0].mounts[0].point, "C:");
         }
+    }
+
+    #[test]
+    fn indexes_hives_event_logs_and_prefetch() {
+        let os = MemVolume::new(
+            1,
+            &[
+                "Windows/System32/config/SYSTEM",
+                "Windows/System32/config/DEFAULT",
+                "Windows/AppCompat/Programs/Amcache.hve",
+                "Windows/System32/winevt/Logs/Security.evtx",
+                "Windows/System32/winevt/Logs/System.EVTX",
+                "Windows/Prefetch/CMD.EXE-0BD30981.pf",
+                "Windows/Prefetch/Layout.ini",
+                "Users/admin/NTUSER.DAT",
+                "Users/admin/AppData/Local/Microsoft/Windows/UsrClass.dat",
+                "Users/Public/Desktop",
+            ],
+        );
+        let (sid, vid) = counters();
+        let (systems, _) = build_systems(&[&os], &profiles(), &Capabilities::default(), sid, vid);
+        let mut got: Vec<(String, String)> = WindowsProfile
+            .index(&systems[0], &[&os])
+            .into_iter()
+            .map(|(_, p, k)| {
+                let style = PathStyle {
+                    separator: '/',
+                    case: CasePolicy::Exact,
+                };
+                let p = p.display(style).trim_start_matches('/').to_string();
+                (k.as_str().to_string(), p)
+            })
+            .collect();
+        got.sort();
+        let want = [
+            ("windows.evtx", "Windows/System32/winevt/Logs/Security.evtx"),
+            ("windows.evtx", "Windows/System32/winevt/Logs/System.EVTX"),
+            (
+                "windows.hive.amcache",
+                "Windows/AppCompat/Programs/Amcache.hve",
+            ),
+            ("windows.hive.default", "Windows/System32/config/DEFAULT"),
+            ("windows.hive.ntuser", "Users/admin/NTUSER.DAT"),
+            ("windows.hive.system", "Windows/System32/config/SYSTEM"),
+            (
+                "windows.hive.usrclass",
+                "Users/admin/AppData/Local/Microsoft/Windows/UsrClass.dat",
+            ),
+            ("windows.prefetch", "Windows/Prefetch/CMD.EXE-0BD30981.pf"),
+        ];
+        assert_eq!(got, want.map(|(k, p)| (k.to_string(), p.to_string())));
     }
 
     #[test]

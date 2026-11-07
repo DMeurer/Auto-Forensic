@@ -244,6 +244,21 @@ impl VolumeProbe for MemVolume {
             .find(|(p, _)| Self::path(p).key(self.case) == want)
             .map(|(_, d)| d.clone())
     }
+    fn list(&self, dir: &ViewPath) -> Vec<Name> {
+        let (want, depth) = (dir.key(self.case), dir.names().len());
+        let mut out: Vec<Name> = Vec::new();
+        for p in self.paths.iter().map(|p| Self::path(p)) {
+            if p.names().len() > depth
+                && ViewPath::new(p.names()[..depth].to_vec()).key(self.case) == want
+            {
+                let n = &p.names()[depth];
+                if !out.iter().any(|o| o.key(self.case) == n.key(self.case)) {
+                    out.push(n.clone());
+                }
+            }
+        }
+        out
+    }
 }
 
 /// One system found by a detector.

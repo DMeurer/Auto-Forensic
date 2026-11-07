@@ -25,4 +25,5 @@ workspace = true
 [dev-dependencies]
 af-fmt-regf.workspace = true
 af-fmt-utmp.workspace = true
+tempfile = "3.27.0"
 duckdb = { version = "=1.20000.1", default-features = false, features = ["bundled"] }

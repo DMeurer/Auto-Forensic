@@ -402,10 +402,23 @@ impl VolumeProbe for FsVolume<'_> {
         src.read_exact_at(0, &mut buf).ok()?;
         Some(buf)
     }
+    /// Without short aliases (NTFS 8.3 names), which would list each file twice.
     fn list(&self, dir: &ViewPath) -> Vec<Name> {
+        let is_alias = |n: &Name, f: &FileId| {
+            self.fs
+                .entry(f)
+                .ok()
+                .flatten()
+                .is_some_and(|e| e.names.iter().any(|en| en.alias && en.name == *n))
+        };
         self.lookup(dir)
             .and_then(|id| self.fs.list(&id).ok())
-            .map(|v| v.into_iter().map(|(n, _)| n).collect())
+            .map(|v| {
+                v.into_iter()
+                    .filter(|(n, f)| !is_alias(n, f))
+                    .map(|(n, _)| n)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -716,9 +729,9 @@ mod tests {
         );
         assert_eq!(v.read(&p("Users/NTUSER.DAT")).unwrap(), b"regf....");
         assert_eq!(
-            v.list(&p("Users")).len(),
-            2,
-            "the long name and the 8.3 alias"
+            v.list(&p("Users")),
+            [Name::from_text("NTUSER.DAT", NameKind::Utf16)],
+            "the long name, not the 8.3 alias, which profiles would see as a second file"
         );
         assert!(
             v.exists(&p("USERS~1/NTUSER~1.DAT")),

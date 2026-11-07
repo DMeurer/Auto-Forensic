@@ -35,43 +35,57 @@ pub struct MergeSuggestion {
 }
 
 impl Project {
-    /// Detects the systems in a folder or archive source with `profiles` (C1, I22), records each
-    /// as a system of that source with its identity, and adds the artifacts each profile knows by
-    /// path to the artifact index. A source nothing claims becomes one `none` system. Drive
-    /// folders at the top (`C/Windows/...`, as KAPE writes them) are each a volume of their own.
-    pub fn add_folder_systems(
+    /// Detects the systems in a folder, archive, image or device source with `profiles` (C1,
+    /// I22, I23), records each as a system of that source with its identity, and adds the
+    /// artifacts each profile knows by path to the artifact index. A folder or archive nothing
+    /// claims becomes one `none` system, as does each image volume nothing claims. Drive folders
+    /// at the top of a folder or archive (`C/Windows/...`, as KAPE writes them) are each a volume
+    /// of their own. Image volumes are read through their file system (NTFS so far).
+    pub fn add_systems(
         &mut self,
         source: &crate::source::SourceInfo,
         profiles: &[&dyn af_core::profile::OsProfile],
     ) -> Result<Vec<SystemId>, ProjectError> {
         use af_core::artifact::Artifact;
         use af_core::bytes::Locator;
-        use af_core::fs::{FileSystem, FsVolume, StreamName};
+        use af_core::fs::{FsVolume, StreamName};
+        use af_core::path::ViewPath;
         use af_core::system::{SubVolume, ViewId, VolumeId, VolumeProbe};
-        let folder = af_host::folder::FolderVolume::new(VolumeId(source.id.0), &source.files[0]);
-        let archive = match source.kind.as_str() {
-            "archive" => Some(crate::run::open_archive(source)?),
-            _ => None,
+        let is_folder = source.kind == "folder";
+        let folder = af_host::folder::FolderVolume::new(VolumeId(0), &source.files[0]);
+        let fss = if is_folder {
+            vec![]
+        } else {
+            crate::run::file_systems(source)?
         };
-        let in_archive = archive.as_ref().map(|fs| FsVolume {
-            id: VolumeId(source.id.0),
-            fs,
-        });
-        let base: &dyn VolumeProbe = match &in_archive {
-            Some(v) => v,
-            None => &folder,
-        };
-        let drives: Vec<SubVolume> = af_core::system::drive_folders(base)
-            .into_iter()
+        let fs_vols: Vec<FsVolume> = fss
+            .iter()
             .enumerate()
-            .map(|(i, name)| SubVolume {
-                id: VolumeId(source.id.0.wrapping_add(i as u128 + 1)),
-                inner: base,
-                root: af_core::path::ViewPath::new(vec![name]),
+            .map(|(i, (_, fs))| FsVolume {
+                id: VolumeId(i as u128 + 1),
+                fs: fs.as_ref(),
             })
             .collect();
+        let bases: Vec<&dyn VolumeProbe> = if is_folder {
+            vec![&folder]
+        } else {
+            fs_vols.iter().map(|v| v as &dyn VolumeProbe).collect()
+        };
+        // Drive folders only in collections: a disk's own folder named `C` is just a folder.
+        let drives: Vec<SubVolume> = match (source.kind.as_str(), bases.first()) {
+            ("folder" | "archive", Some(&base)) => af_core::system::drive_folders(base)
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| SubVolume {
+                    id: VolumeId((fs_vols.len() + 1 + i) as u128),
+                    inner: base,
+                    root: ViewPath::new(vec![name]),
+                })
+                .collect(),
+            _ => vec![],
+        };
         let vols: Vec<&dyn VolumeProbe> = if drives.is_empty() {
-            vec![base]
+            bases.clone()
         } else {
             drives.iter().map(|d| d as &dyn VolumeProbe).collect()
         };
@@ -93,36 +107,36 @@ impl Project {
             )?;
             if let Some(profile) = af_core::profile::profile_for(&sys.family, profiles) {
                 for (vol, path, kind) in profile.index(sys, &vols) {
-                    let path = match drives.iter().find(|d| d.id == vol) {
-                        Some(d) => d.full(&path),
-                        None => path,
+                    // Back to a path of the base volume, below a drive folder if there is one.
+                    let (base, path) = match drives.iter().find(|d| d.id == vol) {
+                        Some(d) => (0, d.full(&path)),
+                        None => match bases.iter().position(|b| b.id() == vol) {
+                            Some(i) => (i, path),
+                            None => continue,
+                        },
                     };
-                    let sha256 = match (&in_archive, &archive) {
-                        (Some(v), Some(fs)) => {
-                            let Some(data) = v
-                                .lookup(&path)
-                                .map(|f| fs.open(&f, &StreamName::Default))
-                                .transpose()?
-                                .flatten()
-                            else {
-                                continue;
-                            };
-                            af_host::ewf::sha256_of(&*data)?
-                        }
-                        _ => {
-                            let Some(on_disk) = folder.on_disk(&path) else {
-                                continue;
-                            };
-                            crate::source::full_hash(&[on_disk])?
-                        }
+                    let (locator, sha256) = if is_folder {
+                        let Some(on_disk) = folder.on_disk(&path) else {
+                            continue;
+                        };
+                        (
+                            Locator::root("source.folder", &source.id.to_string()),
+                            crate::source::full_hash(&[on_disk])?,
+                        )
+                    } else {
+                        let Some(data) = fs_vols[base]
+                            .lookup(&path)
+                            .map(|f| fss[base].1.open(&f, &StreamName::Default))
+                            .transpose()?
+                            .flatten()
+                        else {
+                            continue;
+                        };
+                        (fss[base].0.clone(), af_host::ewf::sha256_of(&*data)?)
                     };
                     index.add(Artifact {
                         kind,
-                        locator: Locator::root(
-                            &format!("source.{}", source.kind),
-                            &source.id.to_string(),
-                        )
-                        .child("fs.path", &crate::run::folder_locator_path(&path)),
+                        locator: locator.child("fs.path", &crate::run::folder_locator_path(&path)),
                         source: source.id,
                         system: Some(id),
                         sha256,

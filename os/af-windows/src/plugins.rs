@@ -23,6 +23,7 @@ const HIVES: &[&str] = &[
     "windows.hive.security",
     "windows.hive.sam",
     "windows.hive.amcache",
+    "windows.hive.default",
     "windows.hive.unknown",
 ];
 

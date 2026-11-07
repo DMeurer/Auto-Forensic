@@ -21,6 +21,7 @@ dependencies = [
  "af-windows",
  "clap",
  "duckdb",
+ "tempfile",
 ]
 
 [[package]]
@@ -87,6 +88,7 @@ version = "0.0.0"
 dependencies = [
  "af-core",
  "af-fs-archive",
+ "af-fs-ntfs",
  "af-host",
  "duckdb",
  "sha2",

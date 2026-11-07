@@ -15,16 +15,20 @@ use af_core::artifact::Artifact;
 use af_core::bytes::{ByteSource, ExtentSource, Locator};
 use af_core::capability::Capabilities;
 use af_core::fs::{FileSystem, FsVolume, StreamName};
+use af_core::ids::SourceId;
 use af_core::ids::SystemId;
 use af_core::names::Kind;
 use af_core::path::{NameKind, ViewPath};
 use af_core::runner::{NewEvent, NewFact, NewLink, Opener, Plugin, Sink, Target, run};
 use af_core::system::{Family, System, VolumeId};
 use af_fs_archive::Archive;
+use af_fs_ntfs::Ntfs;
 use af_host::folder::{FileSource, FolderVolume};
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// What a run did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,9 +81,26 @@ impl Sink for SpoolSink {
     }
 }
 
-/// Opens artifacts of a project: loose files from their copy, folder and archive files in place.
+/// Opens artifacts of a project: loose files from their copy, everything else in place. A
+/// source's file systems are opened once and kept for the run.
 struct ProjectOpener {
     sources: Vec<SourceInfo>,
+    opened: Mutex<HashMap<SourceId, Arc<FileSystems>>>,
+}
+
+impl ProjectOpener {
+    fn file_systems(&self, s: &SourceInfo) -> io::Result<Arc<FileSystems>> {
+        let mut opened = self
+            .opened
+            .lock()
+            .map_err(|_| io::Error::other("opener lock poisoned"))?;
+        if let Some(f) = opened.get(&s.id) {
+            return Ok(f.clone());
+        }
+        let f = Arc::new(file_systems(s)?);
+        opened.insert(s.id, f.clone());
+        Ok(f)
+    }
 }
 
 impl Opener for ProjectOpener {
@@ -89,7 +110,7 @@ impl Opener for ProjectOpener {
             .iter()
             .find(|s| s.id == a.source)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "artifact without a source"))?;
-        // A folder or archive locator's last step holds the path below it, `/` between names.
+        // The locator's last step holds the path below the folder or volume, `/` between names.
         let rel = a
             .locator
             .steps()
@@ -110,7 +131,7 @@ impl Opener for ProjectOpener {
         let missing = || {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("{rel} isn't in the archive"),
+                format!("{rel} isn't in the source"),
             )
         };
         match s.kind.as_str() {
@@ -124,13 +145,22 @@ impl Opener for ProjectOpener {
                 let vol = FolderVolume::new(VolumeId(0), &s.files[0]);
                 Ok(Box::new(vol.open(&path, a.locator.clone())?))
             }
-            "archive" => {
-                let fs = open_archive(s)?;
+            "archive" | "image" | "device" => {
+                // The locator is that of the file system's volume, then the path.
+                let steps = a.locator.steps();
+                let on = Locator(steps[..steps.len().saturating_sub(1)].to_vec());
+                let fss = self.file_systems(s)?;
+                let fs = &fss.iter().find(|(l, _)| *l == on).ok_or_else(missing)?.1;
+                let names = if s.kind == "archive" {
+                    NameKind::Bytes
+                } else {
+                    NameKind::Utf16
+                };
                 let vol = FsVolume {
                     id: VolumeId(0),
-                    fs: &fs,
+                    fs: fs.as_ref(),
                 };
-                let id = vol.lookup(&parse(NameKind::Bytes)?).ok_or_else(missing)?;
+                let id = vol.lookup(&parse(names)?).ok_or_else(missing)?;
                 let data = fs.open(&id, &StreamName::Default)?.ok_or_else(missing)?;
                 let len = data.len();
                 Ok(Box::new(ExtentSource::slice(
@@ -181,6 +211,7 @@ pub fn run_project(dir: &Path, plugins: &[&dyn Plugin]) -> Result<RunSummary, Pr
     let mut outcomes = reader.store.outcomes()?;
     let opener = ProjectOpener {
         sources: reader.sources()?,
+        opened: Mutex::new(HashMap::new()),
     };
     let run_dir = reader.temp.run_dir()?;
     drop(reader);
@@ -232,13 +263,32 @@ pub fn run_project(dir: &Path, plugins: &[&dyn Plugin]) -> Result<RunSummary, Pr
 }
 
 /// A path below a folder source as the locator step `fs.path` holds it.
-/// An archive source opened as a file system.
-pub(crate) fn open_archive(s: &SourceInfo) -> io::Result<Archive> {
-    let file = FileSource::open(
-        &s.files[0],
-        Locator::root("source.archive", &s.id.to_string()),
-    )?;
-    Archive::open(Arc::new(file))
+/// A source's file systems, each with the locator of what it sits on: the archive, or a volume
+/// of an image or device. Only NTFS volumes have an adapter so far; others, and NTFS volumes
+/// that don't open, are left out. Empty for folders and loose files.
+pub(crate) type FileSystems = Vec<(Locator, Box<dyn FileSystem>)>;
+
+pub(crate) fn file_systems(s: &SourceInfo) -> io::Result<FileSystems> {
+    let root = Locator::root(&format!("source.{}", s.kind), &s.id.to_string());
+    match s.kind.as_str() {
+        "archive" => {
+            let file = FileSource::open(&s.files[0], root.clone())?;
+            Ok(vec![(root, Box::new(Archive::open(Arc::new(file))?))])
+        }
+        "image" | "device" => {
+            let img: Arc<dyn ByteSource> = Arc::from(af_host::ewf::open_image(&s.files, root)?);
+            Ok(af_host::volumes::list(img)?
+                .volumes
+                .into_iter()
+                .filter(|v| v.content.name() == "ntfs")
+                .filter_map(|v| {
+                    let fs: Box<dyn FileSystem> = Box::new(Ntfs::open(v.view.clone()).ok()?);
+                    Some((v.view.locator().clone(), fs))
+                })
+                .collect())
+        }
+        _ => Ok(vec![]),
+    }
 }
 
 pub fn folder_locator_path(path: &ViewPath) -> String {
