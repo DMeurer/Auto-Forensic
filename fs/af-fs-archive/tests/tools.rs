@@ -123,20 +123,28 @@ fn tars_in_gnu_and_pax_format_read_back() {
     // The non-ASCII name only where tar keeps names as bytes.
     let files = sample(cfg!(unix));
     write_tree(&d.path().join("tree"), &files);
-    for format in ["gnu", "pax"] {
-        let tar = d.path().join(format!("{format}.tar"));
-        let Ok(st) = Command::new("tar")
-            .arg(format!("--format={format}"))
-            .arg("-cf")
-            .arg(&tar)
-            .arg("-C")
-            .arg(d.path().join("tree"))
-            .arg(".")
-            .status()
-        else {
-            return;
-        };
-        assert!(st.success(), "tar --format={format}");
+    // GNU tar calls its own format `gnu`, bsdtar (Windows, macOS) `gnutar`.
+    for names in [&["gnu", "gnutar"][..], &["pax"]] {
+        let tar = d.path().join(format!("{}.tar", names[0]));
+        let mut made = false;
+        for format in names {
+            let Ok(st) = Command::new("tar")
+                .arg(format!("--format={format}"))
+                .arg("-cf")
+                .arg(&tar)
+                .arg("-C")
+                .arg(d.path().join("tree"))
+                .arg(".")
+                .status()
+            else {
+                return;
+            };
+            made |= st.success();
+            if made {
+                break;
+            }
+        }
+        assert!(made, "tar wrote none of {names:?}");
         read_back(&tar, &files, "fs.tar");
     }
 }
