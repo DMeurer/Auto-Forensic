@@ -161,8 +161,9 @@ impl Ntfs {
         }
         let rec = match self.fs.read_record(n) {
             Ok(r) => r,
-            // A record never written is all zeros, which fails the fixup: no entry, no error.
-            Err(_) if self.never_written(n)? => return Ok(None),
+            // A slot never written (zeros) or holding old bytes has no record signature and fails
+            // the fixup: no entry, no error (as MFTECmd; M4, Jean's records 32842 and 32843).
+            Err(_) if self.no_record(n)? => return Ok(None),
             Err(e) => return Err(err(e)),
         };
         let h = MftRecordHeader::parse(&rec).map_err(err)?;
@@ -178,8 +179,9 @@ impl Ntfs {
         Ok(Some((h, all)))
     }
 
-    /// Whether MFT record `n` is all zeros on the volume.
-    fn never_written(&self, n: u64) -> io::Result<bool> {
+    /// Whether MFT slot `n` holds no record on the volume: neither `FILE` nor `BAAD` (a record
+    /// Windows marked broken, which stays an error).
+    fn no_record(&self, n: u64) -> io::Result<bool> {
         let (size, cluster) = (
             self.fs.boot().mft_record_size,
             self.fs.boot().cluster_size(),
@@ -204,7 +206,7 @@ impl Ntfs {
                 break;
             }
         }
-        Ok(got == buf.len() && buf.iter().all(|&b| b == 0))
+        Ok(got == buf.len() && !buf.starts_with(b"FILE") && !buf.starts_with(b"BAAD"))
     }
 
     /// The entry of a base record, or `None` for a record without a name that isn't the root:

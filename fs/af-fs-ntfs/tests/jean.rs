@@ -121,4 +121,7 @@ fn jean_passes_the_file_system_check() {
         "{:#?}",
         &r.problems[..r.problems.len().min(20)]
     );
+    // M4: MFTECmd's 32,774 records; slots 32842 and 32843 hold old bytes, no record.
+    assert!(r.unreadable.is_empty(), "{:?}", r.unreadable);
+    assert_eq!(r.entries, 32_774);
 }
