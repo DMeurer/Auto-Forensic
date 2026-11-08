@@ -35,6 +35,27 @@ impl Store {
         tx.commit()
     }
 
+    /// Replaces the stored system notes with the last run's.
+    pub fn save_system_notes(&mut self, notes: &[(SystemId, String)]) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch("DELETE FROM system_notes;")?;
+        for (system, note) in notes {
+            tx.execute(
+                "INSERT INTO system_notes VALUES (?, ?)",
+                params![system.0, note],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// A system's notes from the last run.
+    pub fn system_notes(&self, system: SystemId) -> Result<Vec<String>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT note FROM system_notes WHERE system = ? ORDER BY note")?;
+        stmt.query_map([system.0], |r| r.get(0))?.collect()
+    }
+
     /// The stored outcomes. Rows this code didn't write are skipped.
     pub fn outcomes(&self) -> Result<OutcomeLog, Error> {
         let mut stmt = self.conn.prepare(
@@ -131,6 +152,9 @@ impl Project {
             }
             if !any {
                 let _ = writeln!(out, "    no plugin has run on it yet");
+            }
+            for n in self.store.system_notes(sys.id)? {
+                let _ = writeln!(out, "    note: {n}");
             }
         }
         for m in self.merge_suggestions()? {

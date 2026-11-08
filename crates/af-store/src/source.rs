@@ -379,7 +379,7 @@ impl Project {
     pub fn remove_source(&mut self, id: SourceId) -> Result<(), ProjectError> {
         let s = self.source(id)?;
         let tx = self.store.conn.transaction()?;
-        for table in ["system_facts", "run_log", "outcomes"] {
+        for table in ["system_facts", "run_log", "outcomes", "system_notes"] {
             tx.execute(
                 &format!(
                     "DELETE FROM {table} WHERE system IN (SELECT id FROM systems WHERE source = ?)"

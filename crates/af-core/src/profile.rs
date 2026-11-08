@@ -56,13 +56,14 @@ pub trait OsProfile: Detector {
     ) -> Identity;
 
     /// A system's registry, read from its indexed artifacts through `opener`, for plugins that
-    /// read keys (R1). `None` for families without one, or when no hive opens.
+    /// read keys (R1): `None` for families without one, or when no hive opens. With notes for
+    /// `af status` on what wasn't read cleanly, such as a dirty hive without its logs (R3).
     fn registry(
         &self,
         _artifacts: &[crate::artifact::Artifact],
         _opener: &dyn crate::runner::Opener,
-    ) -> Option<Box<dyn crate::capability::Registry>> {
-        None
+    ) -> (Option<Box<dyn crate::capability::Registry>>, Vec<String>) {
+        (None, vec![])
     }
 }
 

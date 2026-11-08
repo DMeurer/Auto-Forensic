@@ -269,3 +269,39 @@ fn a_linux_root_is_detected_and_read() {
     );
     std::fs::remove_dir_all(&parent).unwrap();
 }
+
+/// R3: a Windows folder whose SYSTEM hive is dirty and has no logs; `af status` says so after a
+/// run, and SOFTWARE, closed cleanly, gets no note.
+#[test]
+fn a_dirty_hive_without_logs_is_reported() {
+    let parent = std::env::temp_dir().join(format!("af-cli-dirty-{}", std::process::id()));
+    let config = parent.join("pc/Windows/System32/config");
+    std::fs::create_dir_all(&config).unwrap();
+    let mut system = af_fmt_regf::build_test_hive(&["Select"], "lh");
+    system[4] = 7; // primary sequence number ahead of the secondary: not closed cleanly
+    let sum = af_fmt_regf::hive::header_checksum(&system);
+    system[0x1FC..0x200].copy_from_slice(&sum.to_le_bytes());
+    std::fs::write(config.join("SYSTEM"), system).unwrap();
+    std::fs::write(
+        config.join("SOFTWARE"),
+        af_fmt_regf::build_test_hive(&["Microsoft"], "lh"),
+    )
+    .unwrap();
+    let case = parent.join("case");
+    let c = case.to_str().unwrap();
+    assert!(af(&["project", "new", c]).0);
+    let (ok, _, err) = af(&["source", "add", c, parent.join("pc").to_str().unwrap()]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = af(&["run", c]);
+    assert!(ok, "{err}");
+    let (_, status, _) = af(&["status", c]);
+    assert!(
+        status.contains(
+            "    note: hive Windows/System32/config/SYSTEM is dirty and its transaction logs \
+             are missing: read as it is, recent changes may be missing"
+        ),
+        "{status}"
+    );
+    assert!(!status.contains("config/SOFTWARE is dirty"), "{status}");
+    std::fs::remove_dir_all(&parent).unwrap();
+}

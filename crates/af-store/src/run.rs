@@ -231,14 +231,15 @@ pub fn run_project(
                 .collect()
         })
         .collect();
-    let registries: Vec<_> = systems
+    let (registries, notes): (Vec<_>, Vec<_>) = systems
         .iter()
         .zip(&per_system)
         .map(|(s, artifacts)| {
             af_core::profile::profile_for(&s.family, profiles)
-                .and_then(|p| p.registry(artifacts, &opener))
+                .map(|p| p.registry(artifacts, &opener))
+                .unwrap_or_default()
         })
-        .collect();
+        .unzip();
     let targets: Vec<Target<'_>> = systems
         .iter()
         .zip(per_system)
@@ -278,6 +279,12 @@ pub fn run_project(
     let events_loaded = writer.store.load_spools(&[&spool_path])?;
     writer.store.save_run_log(&runs)?;
     writer.store.save_outcomes(&outcomes)?;
+    let notes: Vec<_> = systems
+        .iter()
+        .zip(notes)
+        .flat_map(|(s, n)| n.into_iter().map(|n| (s.id, n)))
+        .collect();
+    writer.store.save_system_notes(&notes)?;
     Ok(RunSummary {
         systems: systems.len(),
         extracted: extracted.len(),

@@ -180,9 +180,12 @@ impl OsProfile for WindowsProfile {
         &self,
         artifacts: &[af_core::artifact::Artifact],
         opener: &dyn af_core::runner::Opener,
-    ) -> Option<Box<dyn af_core::capability::Registry>> {
-        crate::registry::HiveRegistry::from_artifacts(artifacts, opener)
-            .map(|r| Box::new(r) as Box<dyn af_core::capability::Registry>)
+    ) -> (Option<Box<dyn af_core::capability::Registry>>, Vec<String>) {
+        let (reg, notes) = crate::registry::HiveRegistry::from_artifacts(artifacts, opener);
+        (
+            reg.map(|r| Box::new(r) as Box<dyn af_core::capability::Registry>),
+            notes,
+        )
     }
 
     fn identity(

@@ -214,6 +214,8 @@ pub fn build_test_hive(names: &[&str], list: &str) -> Vec<u8> {
     let mut hive = vec![0u8; BINS];
     hive[..4].copy_from_slice(b"regf");
     hive[0x24..0x28].copy_from_slice(&root.to_le_bytes());
+    let sum = hive::header_checksum(&hive);
+    hive[0x1FC..0x200].copy_from_slice(&sum.to_le_bytes());
     hive.extend_from_slice(&bins);
     hive
 }

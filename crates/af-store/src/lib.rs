@@ -13,6 +13,8 @@
 //! - `run_log`: which plugin version extracted which inputs on which system (F24).
 //! - `tags`: the analyst's tags on events, groups, facts or files; they survive re-runs (F25).
 //! - `outcomes`: each plugin's last outcome per system, for `af status` (F26).
+//! - `system_notes`: what the last run couldn't read cleanly per system, such as a dirty hive
+//!   without its logs (R3).
 //! - `groups` and `group_members`: groups with a reason and a range from their members (F27).
 //! - `lists` and `list_entries`: named timeline lists of event and group references (F28).
 //! - `facts`: data without a time of its own, with stable IDs (F30).
@@ -110,6 +112,10 @@ CREATE TABLE IF NOT EXISTS system_facts (
     system UHUGEINT NOT NULL,
     kind VARCHAR NOT NULL,
     value VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS system_notes (
+    system UHUGEINT NOT NULL,
+    note VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS run_log (
     plugin VARCHAR NOT NULL,

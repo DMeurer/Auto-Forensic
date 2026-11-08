@@ -152,6 +152,9 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         .output()
         .unwrap();
     let status = String::from_utf8_lossy(&o.stdout);
+    // R3: SYSTEM, SOFTWARE, DEFAULT, Amcache and jcloudy's NTUSER.DAT are dirty, and all
+    // replay from their logs, so no hive gets a note.
+    assert!(!status.contains("note: hive"), "{status}");
     for line in [
         "  windows.evtx: 146 (no plugin reads this kind yet)",
         "  windows.prefetch: 161 (no plugin reads this kind yet)",

@@ -9,7 +9,7 @@ use af_core::names::Kind;
 use af_core::path::{Name, NameKind, ViewPath};
 use af_core::runner::Opener;
 use af_core::time::Time;
-use af_fmt_regf::hive::Hive;
+use af_fmt_regf::hive::{Hive, Replay};
 use std::cell::RefCell;
 
 /// Registry value type numbers.
@@ -106,8 +106,13 @@ pub struct HiveRegistry {
 
 impl HiveRegistry {
     /// The machine hives among a system's artifacts, each with its `.LOG1` and `.LOG2`
-    /// artifacts replayed. A hive that doesn't open is left out; `None` if none opens.
-    pub fn from_artifacts(artifacts: &[Artifact], opener: &dyn Opener) -> Option<Self> {
+    /// artifacts replayed. A hive that doesn't open is left out; `None` if none opens. The
+    /// notes name every hive, user hives too, that doesn't open or whose logs are missing or
+    /// didn't replay (R3).
+    pub fn from_artifacts(
+        artifacts: &[Artifact],
+        opener: &dyn Opener,
+    ) -> (Option<Self>, Vec<String>) {
         let read = |a: &Artifact| -> Option<Vec<u8>> {
             let src = opener.open(a).ok()?;
             let mut buf = vec![0; usize::try_from(src.len()).ok()?];
@@ -115,21 +120,47 @@ impl HiveRegistry {
             Some(buf)
         };
         let mut hives = Vec::new();
-        for (kind, id) in MACHINE_HIVES {
-            let Some(hive) = artifacts.iter().find(|a| a.kind.as_str() == kind) else {
-                continue;
-            };
+        let mut notes = Vec::new();
+        let hive_kinds = artifacts.iter().filter(|a| {
+            let k = a.kind.as_str();
+            k.starts_with("windows.hive.") && k != "windows.hive.log"
+        });
+        for hive in hive_kinds {
+            let path = hive.locator.steps().last().map_or("", |s| s.id.as_str());
             let logs = artifacts
                 .iter()
                 .filter(|l| l.kind.as_str() == "windows.hive.log" && is_log_of(l, hive))
                 .filter_map(read)
                 .collect();
-            let Some(data) = read(hive) else { continue };
-            if let Ok(h) = Hive::open(data, logs) {
+            let opened = read(hive)
+                .ok_or_else(|| "can't be read".to_string())
+                .and_then(|data| Hive::open(data, logs));
+            let h = match opened {
+                Ok(h) => h,
+                Err(e) => {
+                    notes.push(format!("hive {path} doesn't open: {e}"));
+                    continue;
+                }
+            };
+            match h.replay() {
+                Replay::Clean | Replay::Replayed => {}
+                Replay::NoLogs => notes.push(format!(
+                    "hive {path} is dirty and its transaction logs are missing: read as it is, \
+                     recent changes may be missing"
+                )),
+                Replay::Failed(e) => notes.push(format!(
+                    "hive {path} is dirty and its log replay failed ({e}): read as far as it got"
+                )),
+            }
+            // shortcut: user hives are only checked here, not offered, until R5.
+            let machine = MACHINE_HIVES.iter().find(|(k, _)| *k == hive.kind.as_str());
+            if let Some((_, id)) = machine
+                && !hives.iter().any(|(h, _): &(HiveId, _)| h.0.as_str() == *id)
+            {
                 hives.push((HiveId(Kind::new(id).expect("valid kind")), RefCell::new(h)));
             }
         }
-        (!hives.is_empty()).then_some(Self { hives })
+        ((!hives.is_empty()).then_some(Self { hives }), notes)
     }
 }
 
@@ -236,6 +267,59 @@ pub(crate) mod tests {
             &[0x41, 0x00, 0x42],
         );
         assert_eq!(computer_name(&r), None, "odd length");
+    }
+
+    fn artifact(kind: &str, path: &str) -> Artifact {
+        Artifact {
+            kind: Kind::new(kind).unwrap(),
+            locator: af_core::bytes::Locator::root("source.folder", "pc").child("fs.path", path),
+            source: af_core::ids::SourceId(1),
+            system: None,
+            sha256: String::new(),
+        }
+    }
+
+    /// R2: a hive's logs pair with it in any letter case, and only with it.
+    #[test]
+    fn logs_pair_ignoring_case() {
+        let hive = artifact("windows.hive.system", "Windows/System32/config/SYSTEM");
+        for log in [
+            "Windows/System32/config/SYSTEM.LOG1",
+            "Windows/System32/config/system.log1",
+            "windows/system32/CONFIG/System.Log2",
+        ] {
+            assert!(
+                is_log_of(&artifact("windows.hive.log", log), &hive),
+                "{log}"
+            );
+        }
+        for other in [
+            "Windows/System32/config/SOFTWARE.LOG1",
+            "Windows/System32/config/SYSTEM.LOG",
+            "Users/x/SYSTEM.LOG1",
+        ] {
+            assert!(
+                !is_log_of(&artifact("windows.hive.log", other), &hive),
+                "{other}"
+            );
+        }
+    }
+
+    /// R2 on real data: notatin's dirty `system` test hive with its lower-case logs replays
+    /// (local only, the files are in the notatin checkout).
+    #[test]
+    fn notatins_dirty_system_hive_replays() {
+        let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("repos/notatin/test_data");
+        let Ok(hive) = std::fs::read(dir.join("system")) else {
+            return;
+        };
+        assert!(af_fmt_regf::hive::is_dirty(&hive));
+        let logs = ["system.log1", "system.log2"].map(|f| std::fs::read(dir.join(f)).unwrap());
+        let h = Hive::open(hive.clone(), logs.to_vec()).unwrap();
+        assert_eq!(h.replay(), &Replay::Replayed);
+        let h = Hive::open(hive, vec![]).unwrap();
+        assert_eq!(h.replay(), &Replay::NoLogs);
     }
 
     #[test]
