@@ -4,6 +4,8 @@ A forensic timeline tool for disk images, devices and loose files, with few, str
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
 
+The event log maps in `os/af-windows/maps/evtxecmd` are EvtxECmd's, by Eric R. Zimmerman, under the MIT licence in [that folder](os/af-windows/maps/evtxecmd/LICENSE); af compiles them in.
+
 ## Layout
 
 | Folder | Layer | Rule |

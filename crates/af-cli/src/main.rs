@@ -61,7 +61,7 @@ enum Command {
     /// Each system's users with their hives, as the last run found them.
     Users { project: PathBuf },
     /// Events in timeline order as tab-separated lines. Event log records get EvtxECmd's fields
-    /// from maps: the project's `maps/*.map` first, then the compiled-in ones.
+    /// from maps: the project's `maps/*.map` first, then af's, then EvtxECmd's (compiled in).
     Events {
         project: PathBuf,
         /// Only events of this kind, such as `windows.evtx.4624`.
@@ -413,14 +413,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// `af events`: the project's maps, then the compiled-in ones, applied to each event log record.
+/// `af events`: the project's maps, then the compiled-in ones (af's, then EvtxECmd's), applied
+/// to each event log record.
 fn events(
     project: &std::path::Path,
     kind: Option<&str>,
     limit: Option<u64>,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use af_windows::evtx_map::{BUILTIN, EventMap, map_event};
+    use af_windows::evtx_map::{EventMap, builtin_maps, map_event};
     let p = Project::open_read_only(project, wait())?;
     let mut maps = vec![];
     if let Ok(dir) = std::fs::read_dir(project.join("maps")) {
@@ -440,7 +441,7 @@ fn events(
             }
         }
     }
-    maps.extend(BUILTIN.iter().filter_map(|(_, t)| EventMap::parse(t).ok()));
+    maps.extend(builtin_maps());
     let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
     let mut lines = vec![];
     let mut used: Vec<usize> = vec![];

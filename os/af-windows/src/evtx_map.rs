@@ -15,8 +15,23 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// The compiled-in maps, af's own first, then EvtxECmd's: a project's own maps go before these.
+/// Maps that don't parse are left out (a test checks that all do).
+pub fn builtin_maps() -> Vec<EventMap> {
+    BUILTIN
+        .iter()
+        .chain(EVTXECMD)
+        .filter_map(|(_, t)| EventMap::parse(t).ok())
+        .collect()
+}
+
+/// EvtxECmd's community maps (MIT, copyright Eric R. Zimmerman), unchanged from
+/// `maps/evtxecmd` (its README names the commit), as file name and text; `build.rs` lists them.
+pub const EVTXECMD: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/evtxecmd_maps.rs"));
+
 /// The maps compiled in (E4, the starter set), as file name and text. Written for af to give
-/// EvtxECmd's fields for these events on LoneWolf; a project's own maps come first.
+/// EvtxECmd's fields for these events on LoneWolf; they win over EvtxECmd's own for the same
+/// event, so 4688's note shows.
 pub const BUILTIN: &[(&str, &str)] = &[
     (
         "Security_Microsoft-Windows-Security-Auditing_4624.map",
@@ -642,21 +657,14 @@ Lookups:
         );
     }
 
-    /// Local only: how many of EvtxECmd's Refine patterns af can run (`cargo xtask`-free: the
-    /// map clone in `~/af-stage3/evtx-maps`).
+    /// EvtxECmd's maps all parse, and af runs every Refine pattern in them but one.
     #[test]
-    fn evtxecmd_refines_compile() {
-        let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-            .join("af-stage3/evtx-maps/repo/evtx/Maps");
-        let Ok(files) = std::fs::read_dir(dir) else {
-            return;
-        };
+    fn evtxecmd_maps_parse_and_their_refines_run() {
+        assert_eq!(EVTXECMD.len(), 474);
+        assert_eq!(builtin_maps().len(), BUILTIN.len() + EVTXECMD.len());
         let mut bad = vec![];
-        for f in files
-            .flatten()
-            .filter(|f| f.path().extension().is_some_and(|x| x == "map"))
-        {
-            let m = EventMap::parse(&std::fs::read_to_string(f.path()).unwrap()).unwrap();
+        for (name, text) in EVTXECMD {
+            let m = EventMap::parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
             for p in m
                 .maps
                 .iter()
