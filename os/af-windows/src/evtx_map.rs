@@ -125,7 +125,12 @@ pub struct Mapped {
 impl EventMap {
     /// Parses a map file.
     pub fn parse(text: &str) -> Result<Self, String> {
-        serde_saphyr::from_str(text).map_err(|e| e.to_string())
+        // EvtxECmd's lookups list one code in several spellings (`0xC000005E` and `3221225566`,
+        // `0xFFFFFFFF` and `0xffffffff`): keys stay as written, not as the numbers they are.
+        let options = serde_saphyr::options! {
+            duplicate_keys: serde_saphyr::DuplicateKeyPolicy::PassThrough,
+        };
+        serde_saphyr::from_str_with_options(text, options).map_err(|e| e.to_string())
     }
 
     /// Whether the map is for this event: the same ID, and channel and provider where the map
@@ -146,18 +151,32 @@ impl EventMap {
         for p in &self.maps {
             let mut text = p.property_value.clone();
             for v in &p.values {
-                let mut got = select(event, &v.value).unwrap_or_default();
-                if let Some(re) = v.refine.as_deref().and_then(|r| Regex::new(r).ok())
-                    && let Some(m) = re.find(&got)
+                let (mut got, one_node) = select_nodes(event, &v.value).unwrap_or_default();
+                if let Some(r) = v.refine.as_deref()
+                    && let Some(m) = refine(r, &got)
                 {
-                    got = m.as_str().to_string();
+                    got = m;
                 }
-                if let Some(l) = self.lookups.iter().find(|l| l.name == v.name) {
-                    got = match (l.values.get(&got), &l.default) {
+                if let Some(l) = self.lookups.iter().find(|l| l.name == v.name)
+                    && !got.is_empty()
+                {
+                    // As EvtxECmd: an unknown code shows the default with the code.
+                    // Codes ignore case: the `evtx` crate writes hex in lower case, maps in upper.
+                    let word = l
+                        .values
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(&got))
+                        .map(|(_, w)| w);
+                    got = match (word, &l.default) {
                         (Some(word), _) => word.clone(),
-                        (None, Some(d)) => d.clone(),
+                        (None, Some(d)) => format!("{d} ({got})"),
                         (None, None) => got,
                     };
+                }
+                // As EvtxECmd: in one node's text, line breaks with the blank lines and indent
+                // after them become `, ` (joined nodes keep theirs).
+                if one_node {
+                    got = line_breaks().replace_all(&got, ", ").into_owned();
                 }
                 text = text.replace(&format!("%{}%", v.name), &got);
             }
@@ -183,12 +202,20 @@ impl EventMap {
 /// The text an XPath (the subset the module docs list) selects in an `Event` element stored as
 /// the `evtx` crate's JSON. `None` if nothing matches.
 pub fn select(event: &Value, path: &str) -> Option<String> {
+    select_nodes(event, path).map(|(t, _)| t)
+}
+
+/// [`select`], and whether the path picked one node rather than several (whose texts are
+/// joined).
+fn select_nodes(event: &Value, path: &str) -> Option<(String, bool)> {
     let rest = path.trim().strip_prefix("/Event")?;
     let mut cur = event;
     for step in steps(rest) {
         if step.is_empty() || step == "text()" {
             continue;
         }
+        // Below a repeated element, XPath goes on from its first node; a last step keeps all.
+        cur = first(cur);
         if let Some(attr) = step.strip_prefix('@') {
             cur = cur.get("#attributes")?.get(attr)?;
             continue;
@@ -197,14 +224,24 @@ pub fn select(event: &Value, path: &str) -> Option<String> {
             Some((n, p)) => (n, Some(p.strip_suffix(']')?)),
             None => (step, None),
         };
+        // `evtx` turns `<Data Name="X">` elements into keys `X` of `EventData`; maps that
+        // address them as `Data`, `Data[n]` or `Data[@Name="X"]` get those fields.
+        let named = name == "Data" && cur.get("Data").is_none() && cur.is_object();
+        let field = |n: usize| {
+            cur.as_object()?
+                .iter()
+                .filter(|(k, _)| *k != "#attributes")
+                .nth(n)
+                .map(|(_, v)| v)
+        };
         cur = match pred {
-            None => first(cur.get(name)?),
+            None if named => field(0)?,
+            None => cur.get(name)?,
             Some(p) if p.starts_with('@') => {
                 let (attr, want) = p[1..].split_once('=')?;
                 let want = want.trim().trim_matches(['"', '\'']);
-                // `evtx` turns `<Data Name="X">` into a key `X` of `EventData`.
                 match cur.get(name) {
-                    None if name == "Data" && attr == "Name" => cur.get(want)?,
+                    None if named && attr == "Name" => cur.get(want)?,
                     None => return None,
                     Some(Value::Array(items)) => items.iter().find(|i| has_attr(i, attr, want))?,
                     Some(v) if has_attr(v, attr, want) => v,
@@ -213,15 +250,127 @@ pub fn select(event: &Value, path: &str) -> Option<String> {
             }
             Some(p) => {
                 let n: usize = p.trim().parse().ok()?;
-                match cur.get(name)? {
-                    Value::Array(items) => items.get(n.checked_sub(1)?)?,
-                    v if n == 1 => v,
-                    _ => return None,
+                if named {
+                    field(n.checked_sub(1)?)?
+                } else {
+                    match cur.get(name)? {
+                        Value::Array(items) => items.get(n.checked_sub(1)?)?,
+                        // Unnamed `<Data>` elements: `{"Data": {"#text": [...]}}`.
+                        Value::Object(o) if o.get("#text").is_some_and(Value::is_array) => {
+                            o["#text"].as_array()?.get(n.checked_sub(1)?)?
+                        }
+                        v if n == 1 => v,
+                        _ => return None,
+                    }
                 }
             }
         };
     }
-    text(cur)
+    let several = match cur {
+        Value::Array(_) => true,
+        Value::Object(o) => o.get("#text").is_some_and(Value::is_array),
+        _ => false,
+    };
+    Some((text(cur)?, !several))
+}
+
+/// The text a `Refine` regex picks, as EvtxECmd takes it: every match, joined with ` | `.
+/// `None` if it doesn't match or can't be compiled (see [`without_lookaround`]).
+fn refine(pattern: &str, text: &str) -> Option<String> {
+    let found: Vec<&str> = if let Ok(re) = Regex::new(pattern) {
+        re.find_iter(text).map(|m| m.as_str()).collect()
+    } else {
+        let re = Regex::new(&without_lookaround(pattern)?).ok()?;
+        re.captures_iter(text)
+            .filter_map(|c| c.name("af").map(|m| m.as_str()))
+            .collect()
+    };
+    (!found.is_empty()).then(|| found.join(" | "))
+}
+
+/// EvtxECmd's maps are .NET regexes, and most of their lookarounds are a lookbehind at the start
+/// and a lookahead at the end: `(?<=X)Y(?=Z)` becomes `X(?P<af>Y)Z`, whose `af` group is the
+/// match. `None` for other lookarounds.
+fn without_lookaround(p: &str) -> Option<String> {
+    let (anchor, mut rest) = match p.strip_prefix('^') {
+        Some(r) if r.starts_with("(?<=") => ("^", r),
+        _ => ("", p),
+    };
+    let mut before = "";
+    if rest.starts_with("(?<=") {
+        let end = group_end(rest, 0)?;
+        before = &rest[4..end];
+        rest = &rest[end + 1..];
+    }
+    let mut after = "";
+    let mut i = 0;
+    while i < rest.len() {
+        match rest.as_bytes()[i] {
+            b'\\' => i += 2,
+            b'[' => i = class_end(rest, i)? + 1,
+            b'(' => {
+                let end = group_end(rest, i)?;
+                if rest[i..].starts_with("(?=") && end == rest.len() - 1 {
+                    after = &rest[i + 3..end];
+                    rest = &rest[..i];
+                    break;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    let out = format!("{anchor}{before}(?P<af>{rest}){after}");
+    (!out.contains("(?<=") && !out.contains("(?=") && !out.contains("(?!") && !out.contains("(?<!"))
+        .then_some(out)
+}
+
+/// The index of the `)` closing the group that opens at `start`.
+fn group_end(p: &str, start: usize) -> Option<usize> {
+    let b = p.as_bytes();
+    let (mut depth, mut i) = (0, start);
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'[' => i = class_end(p, i)?,
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The index of the `]` closing the character class that opens at `start`.
+fn class_end(p: &str, start: usize) -> Option<usize> {
+    let b = p.as_bytes();
+    let mut i = start + 1;
+    if b.get(i) == Some(&b'^') {
+        i += 1;
+    }
+    if b.get(i) == Some(&b']') {
+        i += 1;
+    }
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b']' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn line_breaks() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\r?\n\s*").expect("valid regex"))
 }
 
 /// Path steps, split at `/` outside predicates.
@@ -264,10 +413,16 @@ fn text(v: &Value) -> Option<String> {
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         Value::Null => Some(String::new()),
-        Value::Object(o) => o
-            .get("#text")
-            .map_or(Some(String::new()), |t| text(first(t))),
-        Value::Array(_) => text(first(v)),
+        Value::Object(o) => o.get("#text").map_or(Some(String::new()), text),
+        // Several nodes: EvtxECmd joins their texts, leaving out empty ones.
+        Value::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(text)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
     }
 }
 
@@ -311,13 +466,28 @@ mod tests {
             s("/Event/System/Security/@UserID").as_deref(),
             Some("S-1-5-18")
         );
-        assert_eq!(s("/Event/UserData/Ev/Item").as_deref(), Some("first"));
+        assert_eq!(
+            s("/Event/UserData/Ev/Item").as_deref(),
+            Some("first, second")
+        );
         assert_eq!(s("/Event/UserData/Ev/Item[2]").as_deref(), Some("second"));
         assert_eq!(
             s("/Event/UserData/Ev/Item[@Kind=\"b\"]/text()").as_deref(),
             Some("second")
         );
         assert_eq!(s("/Event/EventData/Data[@Name=\"Nope\"]"), None);
+        assert_eq!(s("/Event/EventData/Data[2]").as_deref(), Some("DESKTOP"));
+        assert_eq!(s("/Event/EventData/Data").as_deref(), Some("jcloudy"));
+        assert_eq!(s("/Event/EventData/Data[4]"), None);
+        let unnamed = json!({"EventData": {"Data": {"#text": ["a", "b", "", "c"]}}});
+        assert_eq!(
+            select(&unnamed, "/Event/EventData/Data").as_deref(),
+            Some("a, b, c")
+        );
+        assert_eq!(
+            select(&unnamed, "/Event/EventData/Data[2]").as_deref(),
+            Some("b")
+        );
         assert_eq!(s("/Other/x"), None);
         assert_eq!(s("/Event/UserData/Ev/Item[0]"), None);
     }
@@ -361,6 +531,7 @@ Lookups:
     Values:
       2: Interactive
       3: Network
+      0xA: Hex ten
 "#,
         )
         .unwrap();
@@ -373,6 +544,21 @@ Lookups:
         assert_eq!(out.user_name, "DESKTOP\\jcloudy");
         assert_eq!(out.payload[1], "LogonType Interactive");
         assert_eq!(out.payload[0], "");
+        let mut e = event();
+        e["EventData"]["LogonType"] = json!(9);
+        assert_eq!(m.apply(&e).payload[1], "LogonType Unknown (9)");
+        e["EventData"]["LogonType"] = json!("");
+        assert_eq!(m.apply(&e).payload[1], "LogonType ");
+        e["EventData"]["LogonType"] = json!("2");
+        assert_eq!(m.apply(&e).payload[1], "LogonType Interactive");
+        e["EventData"]["LogonType"] = json!("0xa");
+        assert_eq!(
+            m.apply(&e).payload[1],
+            "LogonType Hex ten",
+            "codes ignore case"
+        );
+        e["EventData"]["TargetDomainName"] = json!("ab\r\n\r\n\t\tcd\nef");
+        assert_eq!(m.apply(&e).user_name, "ab, cd, ef\\jcloudy");
     }
 
     #[test]
@@ -391,6 +577,106 @@ Lookups:
             "Microsoft-Windows-Wcmsvc/Operational",
             "Microsoft-Windows-Wcmsvc"
         ));
+    }
+
+    /// EvtxECmd's maps list one code in two spellings; both stay as written.
+    #[test]
+    fn lookup_keys_keep_their_spelling() {
+        let m = EventMap::parse(
+            "EventId: 1\nLookups:\n  - Name: Status\n    Values:\n      0xC000005E: no logon servers\n      3221225566: no logon servers\n      0xFFFFFFFF: failure\n      0xffffffff: failure\n",
+        )
+        .unwrap();
+        let keys: Vec<&str> = m.lookups[0].values.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["0xC000005E", "0xFFFFFFFF", "0xffffffff", "3221225566"]
+        );
+    }
+
+    /// EvtxECmd's lookaround forms, as its maps use them.
+    #[test]
+    fn refine_takes_lookarounds_at_the_ends() {
+        let r = |p: &str, t: &str| refine(p, t);
+        assert_eq!(
+            r("^.*(?=,)", "time.windows.com,0x9 (ntp)").as_deref(),
+            Some("time.windows.com")
+        );
+        assert_eq!(
+            r("(?<=Users\\\\).*", "C:\\Users\\defaultuser0").as_deref(),
+            Some("defaultuser0")
+        );
+        assert_eq!(
+            r("(?<=, )[^,\\d]+(?=,)", "1, Search, 2,").as_deref(),
+            Some("Search")
+        );
+        assert_eq!(
+            r("(?<=URL=\"?)[^\";]+", "x URL=\"http://a\"; y").as_deref(),
+            Some("http://a")
+        );
+        assert_eq!(
+            r("CLIENT.*(?=])", "[CLIENT 1.2]").as_deref(),
+            Some("CLIENT 1.2")
+        );
+        assert_eq!(
+            r("(?<=MAC:).*?(?=\n)", "IP:1\nMAC:aa\nX").as_deref(),
+            Some("aa")
+        );
+        assert_eq!(
+            r("HostName=(.+)", "a\nHostName=ConsoleHost\n").as_deref(),
+            Some("HostName=ConsoleHost")
+        );
+        assert_eq!(r("(?<=a)b(?=c)", "xyz"), None);
+        assert_eq!(
+            r(
+                "([a-zA-Z0-9_\\.\\-\\(\\):])+(.exe|.dll)",
+                "Dropbox.exe, 1, ntdll.dll"
+            )
+            .as_deref(),
+            Some("Dropbox.exe | ntdll.dll"),
+            "every match"
+        );
+        assert_eq!(
+            without_lookaround("a(?=b)c"),
+            None,
+            "a lookahead in the middle"
+        );
+    }
+
+    /// Local only: how many of EvtxECmd's Refine patterns af can run (`cargo xtask`-free: the
+    /// map clone in `~/af-stage3/evtx-maps`).
+    #[test]
+    fn evtxecmd_refines_compile() {
+        let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("af-stage3/evtx-maps/repo/evtx/Maps");
+        let Ok(files) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut bad = vec![];
+        for f in files
+            .flatten()
+            .filter(|f| f.path().extension().is_some_and(|x| x == "map"))
+        {
+            let m = EventMap::parse(&std::fs::read_to_string(f.path()).unwrap()).unwrap();
+            for p in m
+                .maps
+                .iter()
+                .flat_map(|p| &p.values)
+                .filter_map(|v| v.refine.as_deref())
+            {
+                if Regex::new(p).is_err()
+                    && without_lookaround(p)
+                        .and_then(|q| Regex::new(&q).ok())
+                        .is_none()
+                {
+                    bad.push(p.to_string());
+                }
+            }
+        }
+        // `(?=))` has one `)` too many, for .NET as well (Time-Service 35 and 37, ServerIP).
+        assert_eq!(
+            bad, ["(?<=-&gt;).*(?=))"; 2],
+            "only the broken pattern isn't run"
+        );
     }
 
     #[test]
