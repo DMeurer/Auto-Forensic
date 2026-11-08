@@ -113,6 +113,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::autoruns::RunKeys,
             &af_windows::autoruns::Services,
             &af_windows::bam::Bam,
+            &af_windows::sam::Sam,
         ],
         &profiles,
     )
@@ -392,4 +393,21 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         )
         .unwrap();
     assert_eq!((bam, csrss), (31, 131_674_920_388_104_203));
+
+    // R14: RECmd's UserAccounts plugin (~/af-stage3/r8): 5 accounts; jcloudy logged in 23 times,
+    // last at 2018-04-06 12:26:27.5724698 UTC.
+    let (accounts, logins, last): (i64, String, i64) = db
+        .query_row(
+            "SELECT count(*), max(json_extract_string(f.attrs, '$.login_count')) \
+             FILTER (WHERE f.subject = 'jcloudy'), \
+             (SELECT ts FROM events WHERE kind = 'windows.account.last_login') \
+             FROM facts f WHERE f.kind = 'windows.account'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (accounts, logins.as_str(), last),
+        (5, "23", 131_674_911_875_724_698)
+    );
 }
