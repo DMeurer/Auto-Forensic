@@ -178,6 +178,32 @@ impl Project {
         Ok(id)
     }
 
+    /// Replaces a system's identity facts, and its label when `label` is given (R6: identity
+    /// from the registry at `af run`).
+    pub fn set_identity(
+        &mut self,
+        system: SystemId,
+        label: Option<&str>,
+        facts: &[(Kind, String)],
+    ) -> Result<(), ProjectError> {
+        let tx = self.store.conn.transaction()?;
+        tx.execute("DELETE FROM system_facts WHERE system = ?", [system.0])?;
+        for (kind, value) in facts {
+            tx.execute(
+                "INSERT INTO system_facts VALUES (?, ?, ?)",
+                duckdb::params![system.0, kind.as_str(), value],
+            )?;
+        }
+        if let Some(l) = label {
+            tx.execute(
+                "UPDATE systems SET label = ? WHERE id = ?",
+                duckdb::params![l, system.0],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn systems(&self) -> Result<Vec<SystemRow>, ProjectError> {
         let conn = &self.store.conn;
         let mut stmt = conn.prepare("SELECT id, source, family, label FROM systems ORDER BY id")?;

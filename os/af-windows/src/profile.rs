@@ -211,6 +211,9 @@ impl OsProfile for WindowsProfile {
         }
         match current_control_set(reg) {
             Some(set) => facts.push(fact("windows.control_set", set)),
+            None if reg.hives().contains(&crate::registry::system_hive()) => {
+                facts.push(unknown_zone("SYSTEM has no current control set"))
+            }
             None => facts.push(unknown_zone("no SYSTEM hive")),
         }
         if let Some(tz) = time_zone(reg) {

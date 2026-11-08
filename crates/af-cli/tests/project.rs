@@ -152,6 +152,17 @@ fn renamed_hives_are_identified() {
     // A second run extracts nothing.
     let (_, out, _) = af(&["run", c]);
     assert!(out.contains(": 0 extracted, 0 events loaded"), "{out}");
+    // R6: the run gives each system with a registry its identity; without SYSTEM (the NTUSER)
+    // the time zone is unknown, and these test hives' SYSTEM has no control set to read it from.
+    let (_, systems, _) = af(&["system", "list", c]);
+    assert!(
+        systems.contains("    windows.time_zone: unknown (no SYSTEM hive)"),
+        "{systems}"
+    );
+    assert!(
+        systems.contains("    windows.time_zone: unknown (SYSTEM has no current control set)"),
+        "{systems}"
+    );
     std::fs::remove_dir_all(&parent).unwrap();
 }
 

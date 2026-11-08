@@ -260,6 +260,19 @@ pub fn run_project(
                 .unwrap_or_default()
         })
         .unzip();
+    // R6: a system with a registry gets its identity from it, every run; others keep the one
+    // from `source add` (a Linux hostname, or a Windows zone that is unknown without SYSTEM).
+    let identities: Vec<Option<af_core::profile::Identity>> = systems
+        .iter()
+        .zip(&registries)
+        .map(|(s, reg)| {
+            let caps = Capabilities {
+                registry: Some(reg.as_deref()?),
+            };
+            let p = af_core::profile::profile_for(&s.family, profiles)?;
+            Some(p.identity(s, &[], &caps))
+        })
+        .collect();
     let targets: Vec<Target<'_>> = systems
         .iter()
         .zip(per_system)
@@ -318,6 +331,11 @@ pub fn run_project(
         .flat_map(|(s, n)| n.into_iter().map(|n| (s.id, n)))
         .collect();
     writer.store.save_system_notes(REGISTRY_NOTES, &notes)?;
+    for (s, identity) in systems.iter().zip(&identities) {
+        if let Some(i) = identity {
+            writer.set_identity(s.id, i.label.as_deref(), &i.facts)?;
+        }
+    }
     Ok(RunSummary {
         systems: systems.len(),
         extracted: extracted.len(),

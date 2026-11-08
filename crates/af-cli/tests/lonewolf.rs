@@ -197,4 +197,22 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         "2018-03-27 09:16:00.9012671 UTC"
     );
     assert!(attrs.contains("\"EventData\""), "{attrs}");
+
+    // R6: the run gives the system its identity from SYSTEM.
+    drop(p);
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["system", "list"])
+        .arg(case.path())
+        .output()
+        .unwrap();
+    let systems = String::from_utf8_lossy(&o.stdout);
+    assert!(systems.contains(" windows  DESKTOP-PM6C56D "), "{systems}");
+    for fact in [
+        "    windows.computer_name: DESKTOP-PM6C56D",
+        "    windows.control_set: ControlSet001",
+        "    windows.time_zone: Eastern Standard Time",
+        "    windows.time_zone_offset: UTC-05:00",
+    ] {
+        assert!(systems.lines().any(|l| l == fact), "{fact} in {systems}");
+    }
 }
