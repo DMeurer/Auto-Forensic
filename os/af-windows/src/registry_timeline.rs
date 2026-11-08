@@ -14,6 +14,17 @@ use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, TimeMeaning};
 use std::sync::OnceLock;
 
+/// The locator of a key's record: the hive file's, plus a `reg.key` step with the key's path
+/// as stored (`\\` before each name, `\\` alone for the root). Value-based events use it to
+/// point at the key that holds the value.
+pub(crate) fn key_locator(
+    hive: &af_core::bytes::Locator,
+    k: &af_core::capability::RegKey,
+) -> af_core::bytes::Locator {
+    let names: Vec<String> = k.path.names().iter().map(Name::display).collect();
+    hive.child("reg.key", &format!("\\{}", names.join("\\")))
+}
+
 /// Every registry key's last-written time.
 pub struct KeyTimes;
 
@@ -59,9 +70,12 @@ impl Plugin for KeyTimes {
             let source_text = source.to_string();
             let sink = &mut *ctx.sink;
             reg.walk(&hive, &mut |k| {
-                let names: Vec<String> = k.path.names().iter().map(Name::display).collect();
-                let path = format!("\\{}", names.join("\\"));
-                let locator = hive_locator.child("reg.key", &path);
+                let locator = key_locator(&hive_locator, k);
+                let path = locator
+                    .steps()
+                    .last()
+                    .map_or("", |s| s.id.as_str())
+                    .to_string();
                 let record = record_id(&source_text, &locator);
                 let attrs = serde_json::json!({
                     "hive": hive.kind.as_str(),

@@ -15,6 +15,7 @@ use std::cell::RefCell;
 /// Registry value type numbers.
 pub const REG_SZ: u32 = 1;
 pub const REG_EXPAND_SZ: u32 = 2;
+pub const REG_BINARY: u32 = 3;
 pub const REG_DWORD: u32 = 4;
 
 /// The SYSTEM hive (`HKLM\SYSTEM`).
@@ -39,9 +40,11 @@ pub fn hive_for_root(root: &str) -> Option<HiveId> {
     Some(HiveId::machine(Kind::new(id).expect("valid kind")))
 }
 
+/// A key path from text with `\\` between names; empty for the root.
 pub(crate) fn path(text: &str) -> ViewPath {
     ViewPath::new(
         text.split('\\')
+            .filter(|n| !n.is_empty())
             .map(|n| Name::from_text(n, NameKind::Utf16))
             .collect(),
     )
@@ -291,7 +294,8 @@ impl Registry for HiveRegistry {
         let (_, h) = self.hives.iter().find(|(id, _)| id == hive)?;
         let text: Vec<String> = path.names().iter().map(Name::display).collect();
         let k = h.borrow_mut().key(&text.join("\\"))?;
-        Some(reg_key(path.clone(), k))
+        // The path as the hive stores it, as `walk` gives it too.
+        Some(reg_key(self::path(&k.path), k))
     }
 
     fn walk(&self, hive: &HiveId, visit: &mut dyn FnMut(&RegKey)) {

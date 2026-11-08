@@ -106,6 +106,7 @@ pub struct Capabilities<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct FakeRegistry {
     keys: BTreeMap<(HiveId, String), RegKey>,
+    origins: BTreeMap<HiveId, (SourceId, Locator)>,
 }
 
 impl FakeRegistry {
@@ -138,6 +139,13 @@ impl FakeRegistry {
             value_type,
             data: data.to_vec(),
         });
+        self
+    }
+
+    /// Says which file a machine hive came from, for [`Registry::origin`].
+    pub fn set_origin(&mut self, hive: &str, source: SourceId, locator: Locator) -> &mut Self {
+        let hive = HiveId::machine(Kind::new(hive).expect("hive ID is a namespaced name"));
+        self.origins.insert(hive, (source, locator));
         self
     }
 
@@ -187,6 +195,10 @@ impl Registry for FakeRegistry {
         self.keys
             .get(&(hive.clone(), path.key(CasePolicy::Insensitive)))
             .cloned()
+    }
+
+    fn origin(&self, hive: &HiveId) -> Option<(SourceId, Locator)> {
+        self.origins.get(hive).cloned()
     }
 }
 

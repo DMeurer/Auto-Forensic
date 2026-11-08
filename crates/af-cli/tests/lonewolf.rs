@@ -108,6 +108,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::plugins::UserProfiles,
             &af_windows::evtx::EventLogs,
             &af_windows::registry_timeline::KeyTimes,
+            &af_windows::host::Host,
         ],
         &profiles,
     )
@@ -252,4 +253,45 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     .map(|(h, o, n)| (h.to_string(), o.to_string(), n))
     .collect();
     assert_eq!(counts, want);
+
+    // R8: as RECmd's Kroll batch reads TSK's copies (~/af-stage3/r8): Windows 10 Education,
+    // build 16299, installed 2018-03-27 12:13:27.5286063, shut down 21:45:28.0567018 (UTC).
+    let os: String = db
+        .query_row(
+            "SELECT subject || ' ' || attrs FROM facts WHERE kind = 'windows.os'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        os.starts_with("Windows 10 Education ") && os.contains(r#""build":"16299""#),
+        "{os}"
+    );
+    for (kind, ticks, key) in [
+        (
+            "windows.os.installed",
+            131_666_264_075_286_063_i64,
+            "Microsoft\\Windows NT\\CurrentVersion",
+        ),
+        (
+            "windows.os.shutdown",
+            131_666_607_280_567_018,
+            "ControlSet001\\Control\\Windows",
+        ),
+    ] {
+        let (raw, path): (i64, String) = db
+            .query_row(
+                "SELECT e.raw_i64, json_extract_string(r.attrs, '$.path') FROM events e \
+                 JOIN records r ON r.id = e.record WHERE e.kind = ?",
+                [kind],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, ticks, "{kind}");
+        assert_eq!(
+            path,
+            format!("\\{key}"),
+            "{kind} points at its key's record"
+        );
+    }
 }

@@ -66,6 +66,9 @@ pub fn is_dirty(hive: &[u8]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Key {
     pub name: String,
+    /// The key's path with its names as the hive stores them (`\\` between names, empty for
+    /// the root), whatever case it was asked for in.
+    pub path: String,
     /// FILETIME ticks, as stored.
     pub last_written: u64,
     pub subkeys: Vec<String>,
@@ -131,13 +134,13 @@ impl Hive {
 
     /// The key at `path` (`\` between names, below the root; empty for the root).
     pub fn key(&mut self, path: &str) -> Option<Key> {
-        let (k, at) = self.node(path)?;
+        let (k, at, stored) = self.node(path)?;
         let subkeys = self
             .children(&at, &k)
             .iter()
             .map(|s| s.key_name.clone())
             .collect();
-        Some(to_key(&k, subkeys))
+        Some(to_key(&k, stored, subkeys))
     }
 
     /// Every key, depth first from the root in subkey list order, with its path (`\` between
@@ -156,7 +159,11 @@ impl Hive {
             let kids = node.read_sub_keys(&mut self.parser);
             visit(
                 &path,
-                &to_key(&node, kids.iter().map(|k| k.key_name.clone()).collect()),
+                &to_key(
+                    &node,
+                    path.clone(),
+                    kids.iter().map(|k| k.key_name.clone()).collect(),
+                ),
             );
             for kid in kids.into_iter().rev() {
                 let p = if path.is_empty() {
@@ -170,7 +177,7 @@ impl Hive {
     }
 }
 
-fn to_key(k: &CellKeyNode, subkeys: Vec<String>) -> Key {
+fn to_key(k: &CellKeyNode, path: String, subkeys: Vec<String>) -> Key {
     let values = k
         .value_iter()
         .map(|v| Value {
@@ -181,6 +188,7 @@ fn to_key(k: &CellKeyNode, subkeys: Vec<String>) -> Key {
         .collect();
     Key {
         name: k.key_name.clone(),
+        path,
         // The raw FILETIME: notatin's date conversion overflows for 0 and far-off times.
         last_written: k.detail.last_key_written_date_and_time(),
         subkeys,
@@ -190,11 +198,12 @@ fn to_key(k: &CellKeyNode, subkeys: Vec<String>) -> Key {
 
 impl Hive {
     /// The key at `path` from the root, one level at a time through [`Hive::children`], with its
-    /// path in lower case. Only the matching child is followed, so a subkey list that names one
-    /// key many times costs one read of the list.
-    fn node(&mut self, path: &str) -> Option<(CellKeyNode, String)> {
+    /// path in lower case and as stored. Only the matching child is followed, so a subkey list
+    /// that names one key many times costs one read of the list.
+    fn node(&mut self, path: &str) -> Option<(CellKeyNode, String, String)> {
         let mut cur = self.parser.get_root_key().ok()??;
         let mut at = String::new();
+        let mut stored = String::new();
         for name in path.split('\\').filter(|n| !n.is_empty()) {
             let want = name.to_lowercase();
             let next = self
@@ -204,11 +213,13 @@ impl Hive {
                 .clone();
             if !at.is_empty() {
                 at.push('\\');
+                stored.push('\\');
             }
             at.push_str(&want);
+            stored.push_str(&next.key_name);
             cur = next;
         }
-        Some((cur, at))
+        Some((cur, at, stored))
     }
 
     /// The subkeys of `node`, whose lower-case path is `at`, read once.
@@ -263,6 +274,11 @@ mod tests {
         subs.sort();
         assert_eq!(subs, ["Select", "Setup"]);
         assert_eq!(h.key("select").unwrap().name, "Select", "without case");
+        assert_eq!(
+            h.key("SELECT").unwrap().path,
+            "Select",
+            "the path as stored"
+        );
         assert!(h.key("Nope").is_none());
         assert_eq!(h.replay(), &Replay::Clean);
     }

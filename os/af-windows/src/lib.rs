@@ -10,6 +10,7 @@
 
 pub mod evtx;
 pub mod evtx_map;
+pub mod host;
 pub mod loose;
 pub mod plugins;
 pub mod profile;
