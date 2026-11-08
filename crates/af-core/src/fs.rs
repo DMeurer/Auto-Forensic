@@ -361,19 +361,27 @@ const PROBE_READ_MAX: u64 = 16 << 20;
 impl FsVolume<'_> {
     /// The allocated entry at a path, comparing names by the file system's case rules.
     pub fn lookup(&self, path: &ViewPath) -> Option<FileId> {
+        self.resolve(path).map(|(id, _)| id)
+    }
+
+    /// Like [`Self::lookup`], also giving the path with each name as the file system stores it
+    /// (`Windows/appcompat` when asked for `Windows/AppCompat`).
+    pub fn resolve(&self, path: &ViewPath) -> Option<(FileId, ViewPath)> {
         let case = self.fs.info().case;
         let mut at = self.fs.root();
+        let mut stored = Vec::new();
         for want in path.names() {
             let key = want.key(case);
-            at = self
+            let (name, id) = self
                 .fs
                 .list(&at)
                 .ok()?
                 .into_iter()
-                .find(|(n, _)| n.key(case) == key)?
-                .1;
+                .find(|(n, _)| n.key(case) == key)?;
+            stored.push(name);
+            at = id;
         }
-        Some(at)
+        Some((at, ViewPath::new(stored)))
     }
 }
 
@@ -728,6 +736,11 @@ mod tests {
             "deleted files aren't found by path"
         );
         assert_eq!(v.read(&p("Users/NTUSER.DAT")).unwrap(), b"regf....");
+        assert_eq!(
+            v.resolve(&p("users/ntuser.dat")).unwrap().1,
+            p("Users/NTUSER.DAT"),
+            "the names as stored"
+        );
         assert_eq!(
             v.list(&p("Users")),
             [Name::from_text("NTUSER.DAT", NameKind::Utf16)],

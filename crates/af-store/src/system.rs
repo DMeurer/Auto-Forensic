@@ -108,7 +108,7 @@ impl Project {
             if let Some(profile) = af_core::profile::profile_for(&sys.family, profiles) {
                 for (vol, path, kind) in profile.index(sys, &vols) {
                     // Back to a path of the base volume, below a drive folder if there is one.
-                    let (base, path) = match drives.iter().find(|d| d.id == vol) {
+                    let (base, mut path) = match drives.iter().find(|d| d.id == vol) {
                         Some(d) => (0, d.full(&path)),
                         None => match bases.iter().position(|b| b.id() == vol) {
                             Some(i) => (i, path),
@@ -124,14 +124,14 @@ impl Project {
                             crate::source::full_hash(&[on_disk])?,
                         )
                     } else {
-                        let Some(data) = fs_vols[base]
-                            .lookup(&path)
-                            .map(|f| fss[base].1.open(&f, &StreamName::Default))
-                            .transpose()?
-                            .flatten()
-                        else {
+                        let Some((f, stored)) = fs_vols[base].resolve(&path) else {
                             continue;
                         };
+                        let Some(data) = fss[base].1.open(&f, &StreamName::Default)? else {
+                            continue;
+                        };
+                        // The locator names the file as the disk stores it, not as the profile asked.
+                        path = stored;
                         (fss[base].0.clone(), af_host::ewf::sha256_of(&*data)?)
                     };
                     index.add(Artifact {

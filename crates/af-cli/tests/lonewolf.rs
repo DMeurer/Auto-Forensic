@@ -88,6 +88,11 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     ] {
         assert_eq!(count(k), n, "{k}: {:?}", kinds.get(k));
     }
+    // The locator holds the folder as the disk stores it, as in TSK's `fls`.
+    assert_eq!(
+        kinds["windows.hive.amcache"],
+        ["Windows/appcompat/Programs/Amcache.hve"]
+    );
     let ntuser = &kinds["windows.hive.ntuser"];
     assert!(
         ntuser.contains(&"Users/jcloudy/NTUSER.DAT".to_string()),

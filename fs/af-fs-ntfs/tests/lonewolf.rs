@@ -28,6 +28,29 @@ fn lonewolf() -> Option<Ntfs> {
     Some(Ntfs::open(ntfs.view.clone()).unwrap())
 }
 
+/// The stage 3 gate's `$MFT` check: `icat -o 1259520 LoneWolf.E0? 0 | sha256sum`.
+#[test]
+fn mft_hashes_like_tsk() {
+    let Some(fs) = lonewolf() else { return };
+    let v = FsVolume {
+        id: VolumeId(4),
+        fs: &fs,
+    };
+    let path = ViewPath::new(vec![Name::from_text("$MFT", NameKind::Utf16)]);
+    let id = v.lookup(&path).expect("$MFT found");
+    let src = fs
+        .open(&id, &StreamName::Default)
+        .unwrap()
+        .expect("stream opens");
+    assert_eq!(
+        (src.len(), af_host::ewf::sha256_of(&*src).unwrap()),
+        (
+            151_257_088,
+            "a313b884e508f8b5425a27bfee83059abb9cfcd7ab0c84f887a520019c6760fd".into()
+        )
+    );
+}
+
 /// `icat -o 1259520 LoneWolf.E0? 89229 | sha256sum` for the hive. For the stale bytes,
 /// `istat -r` gives runs of 3,072 clusters at 1432898 and 64 at 5385156, size 12,845,056 and
 /// initialized size 12,402,688, so they are `blkcat … 1435926 44` then `blkcat … 5385156 64`.
