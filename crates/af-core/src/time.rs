@@ -53,6 +53,10 @@ pub mod encoding {
     pub const DOS_LOCAL_10MS: &str = "dos_local_10ms";
     /// A DOS date word alone, a local date with no zone. Raw value: the date word.
     pub const DOS_LOCAL_DATE: &str = "dos_local_date";
+    /// Local calendar fields with milliseconds and no zone, as Windows' SYSTEMTIME holds a local
+    /// time (R9: NetworkList dates). Raw value: `year << 36 | month << 32 | day << 27 |
+    /// hour << 22 | minute << 16 | second << 10 | millisecond`.
+    pub const LOCAL_CALENDAR: &str = "local_calendar";
 }
 
 /// The sort key: 100 ns ticks since 1601-01-01 00:00 UTC.
@@ -172,6 +176,7 @@ pub struct Precision(pub i64);
 impl Precision {
     pub const TICK: Self = Self(1);
     pub const TEN_MS: Self = Self(TICKS_PER_SECOND / 100);
+    pub const MS: Self = Self(TICKS_PER_SECOND / 1000);
     pub const SECOND: Self = Self(TICKS_PER_SECOND);
     pub const TWO_SECONDS: Self = Self(2 * TICKS_PER_SECOND);
     pub const DAY: Self = Self(TICKS_PER_DAY);
@@ -414,6 +419,49 @@ impl Time {
         }
     }
 
+    /// From local calendar fields with milliseconds (a SYSTEMTIME in local time), zone unknown
+    /// until [`Time::with_local_offset`] gives it one. Year 0 is "not set"; invalid fields are
+    /// out of range.
+    pub fn from_local_calendar(
+        year: u16,
+        month: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        ms: u16,
+    ) -> Self {
+        let f = |v: u16, bits: u32| i64::from(v) << bits;
+        let raw = RawTime::int(
+            encoding::LOCAL_CALENDAR,
+            f(year, 36)
+                | f(month & 0xf, 32)
+                | f(day & 0x1f, 27)
+                | f(hour & 0x1f, 22)
+                | f(minute & 0x3f, 16)
+                | f(second & 0x3f, 10)
+                | f(ms & 0x3ff, 0),
+        );
+        let p = Precision::MS;
+        if year == 0 {
+            return Self::without_key(raw, TimeStatus::NotSet, p, Zone::Unknown);
+        }
+        let key = TimeKey::from_utc(
+            year.into(),
+            month.into(),
+            day.into(),
+            hour.into(),
+            minute.into(),
+            second.into(),
+        );
+        match key {
+            Some(TimeKey(k)) if ms < 1000 => {
+                Self::local_unknown_zone(k + i64::from(ms) * (TICKS_PER_SECOND / 1000), p, raw)
+            }
+            _ => Self::without_key(raw, TimeStatus::OutOfRange, p, Zone::Unknown),
+        }
+    }
+
     /// A local reading `k` (taken as UTC) with a step of `step` ticks, in an unknown zone.
     fn local_unknown_zone(k: i64, step: Precision, raw: RawTime) -> Self {
         Self {
@@ -540,6 +588,18 @@ impl Time {
             }
             encoding::DOS_LOCAL_DATE if (0..1 << 16).contains(&v) => {
                 Self::from_dos_local_date(v as u16)
+            }
+            encoding::LOCAL_CALENDAR if (0..1 << 52).contains(&v) => {
+                let at = |bits: u32, mask: i64| ((v >> bits) & mask) as u16;
+                Self::from_local_calendar(
+                    at(36, 0xffff),
+                    at(32, 0xf),
+                    at(27, 0x1f),
+                    at(22, 0x1f),
+                    at(16, 0x3f),
+                    at(10, 0x3f),
+                    at(0, 0x3ff),
+                )
             }
             _ => return None,
         };
@@ -707,6 +767,29 @@ mod tests {
 
     fn utc(t: &Time) -> String {
         t.key.expect("has a key").to_utc().to_string()
+    }
+
+    /// R9: a local SYSTEMTIME (an exam-image NetworkList date) round-trips, and with its zone
+    /// becomes UTC.
+    #[test]
+    fn local_calendar_round_trips_and_takes_an_offset() {
+        let t = Time::from_local_calendar(2026, 4, 18, 12, 4, 28, 250);
+        assert_eq!(t.zone, Zone::Unknown);
+        assert_eq!(Time::from_raw(&t.raw), Some(t.clone()));
+        assert_eq!(Time::from_columns(&t.to_columns()), Ok(t.clone()));
+        let utc = t.with_local_offset(120, false);
+        assert_eq!(
+            utc.display(),
+            "2026-04-18 10:04:28.250 UTC, local UTC+02:00"
+        );
+        assert_eq!(
+            Time::from_local_calendar(0, 0, 0, 0, 0, 0, 0).status,
+            TimeStatus::NotSet
+        );
+        assert_eq!(
+            Time::from_local_calendar(2026, 2, 30, 0, 0, 0, 0).status,
+            TimeStatus::OutOfRange
+        );
     }
 
     #[test]

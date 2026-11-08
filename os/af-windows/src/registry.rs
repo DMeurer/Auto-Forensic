@@ -8,7 +8,7 @@ use af_core::capability::{HiveId, RegKey, RegValue, Registry};
 use af_core::names::Kind;
 use af_core::path::{Name, NameKind, ViewPath};
 use af_core::runner::Opener;
-use af_core::time::Time;
+use af_core::time::{TICKS_PER_DAY, Time, TimeKey};
 use af_fmt_regf::hive::{Hive, Replay};
 use std::cell::RefCell;
 
@@ -103,16 +103,101 @@ const MACHINE_HIVES: [(&str, &str); 6] = [
 ];
 
 /// The time zone Windows was set to, from `Control\TimeZoneInformation` in the current control
-/// set (R6).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// set (R6), with its daylight saving rules (R9, user's choice: apply the hive's rules).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TimeZone {
     /// `TimeZoneKeyName` (Windows 7 on), else `StandardName`, such as `Eastern Standard Time`.
     pub name: Option<String>,
     /// `Bias`: minutes to add to local standard time to get UTC (300 for UTC-05:00).
     pub bias: Option<i32>,
+    /// `StandardBias` and `DaylightBias`, added to `Bias` in each season (0 and -60 mostly).
+    pub standard_bias: i32,
+    pub daylight_bias: i32,
+    /// When daylight saving time starts (in standard time) and ends (in daylight time); `None`
+    /// for a zone without it, or with `DynamicDaylightTimeDisabled` set.
+    pub daylight_start: Option<Transition>,
+    pub standard_start: Option<Transition>,
+}
+
+/// A SYSTEMTIME transition rule: with `year` 0 (the usual case) the `week`th `weekday` (0 is
+/// Sunday) of `month`, 5 meaning the last; otherwise that exact date, `week` holding the day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transition {
+    pub year: u16,
+    pub month: u16,
+    pub weekday: u16,
+    pub week: u16,
+    pub hour: u16,
+    pub minute: u16,
+}
+
+impl Transition {
+    fn parse(data: &[u8]) -> Option<Self> {
+        let w = |i: usize| -> Option<u16> {
+            Some(u16::from_le_bytes(
+                data.get(i * 2..i * 2 + 2)?.try_into().ok()?,
+            ))
+        };
+        let t = Self {
+            year: w(0)?,
+            month: w(1)?,
+            weekday: w(2)?,
+            week: w(3)?,
+            hour: w(4)?,
+            minute: w(5)?,
+        };
+        (1..=12).contains(&t.month).then_some(t)
+    }
+
+    /// The local (month, day, hour, minute) this rule falls on in `year`.
+    fn on(&self, year: i64) -> Option<(u16, u16, u16, u16)> {
+        let day = if self.year != 0 {
+            self.week
+        } else {
+            let first = TimeKey::from_utc(year, self.month.into(), 1, 0, 0, 0)?;
+            // 1601-01-01 was a Monday, so day 0 counts as weekday 1.
+            let first_weekday = ((first.0 / TICKS_PER_DAY + 1) % 7) as u16;
+            let mut day = 1 + (self.weekday + 7 - first_weekday) % 7 + 7 * (self.week.max(1) - 1);
+            while day > 28
+                && TimeKey::from_utc(year, self.month.into(), day.into(), 0, 0, 0).is_none()
+            {
+                day -= 7;
+            }
+            day
+        };
+        Some((self.month, day, self.hour, self.minute))
+    }
 }
 
 impl TimeZone {
+    /// The offset in minutes east of UTC that applied at a local time (year, month, day, hour,
+    /// minute), by the hive's daylight saving rules. In the hour that repeats when clocks go back
+    /// it gives the daylight offset. `None` without `Bias`.
+    pub fn offset_at(
+        &self,
+        year: i64,
+        month: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+    ) -> Option<i16> {
+        let standard = self.bias? + self.standard_bias;
+        let daylight = self.bias? + self.daylight_bias;
+        let in_daylight = match (self.daylight_start, self.standard_start) {
+            (Some(ds), Some(ss)) => {
+                let (from, to) = (ds.on(year)?, ss.on(year)?);
+                let t = (month, day, hour, minute);
+                if from < to {
+                    t >= from && t < to
+                } else {
+                    t >= from || t < to
+                }
+            }
+            _ => false,
+        };
+        i16::try_from(-(if in_daylight { daylight } else { standard })).ok()
+    }
+
     /// The standard offset from UTC as `UTC-05:00`.
     pub fn offset(&self) -> Option<String> {
         let off = -self.bias?;
@@ -135,9 +220,16 @@ pub fn time_zone(reg: &dyn Registry) -> Option<TimeZone> {
     let name = reg_sz(&key, "TimeZoneKeyName")
         .filter(|n| !n.is_empty())
         .or_else(|| reg_sz(&key, "StandardName"));
+    let dword = |n: &str| reg_dword(&key, n).map(|b| b as i32);
+    let rule = |n: &str| key.value(n).and_then(|v| Transition::parse(&v.data));
+    let dst = dword("DynamicDaylightTimeDisabled") != Some(1);
     Some(TimeZone {
         name,
-        bias: reg_dword(&key, "Bias").map(|b| b as i32),
+        bias: dword("Bias"),
+        standard_bias: dword("StandardBias").unwrap_or(0),
+        daylight_bias: dword("DaylightBias").unwrap_or(0),
+        daylight_start: rule("DaylightStart").filter(|_| dst),
+        standard_start: rule("StandardStart").filter(|_| dst),
     })
 }
 
@@ -396,11 +488,67 @@ pub(crate) mod tests {
         assert_eq!(tz.name.as_deref(), Some("Eastern Standard Time"));
         assert_eq!(tz.offset().as_deref(), Some("UTC-05:00"));
         let east = TimeZone {
-            name: None,
             bias: Some(-330),
+            ..TimeZone::default()
         };
         assert_eq!(east.offset().as_deref(), Some("UTC+05:30"));
         assert_eq!(time_zone(&FakeRegistry::new()), None);
+    }
+
+    /// Germany's rule as Windows stores it: daylight time from the last Sunday of March 02:00
+    /// to the last Sunday of October 03:00, bias -60, daylight bias -60.
+    #[test]
+    fn daylight_saving_by_the_hives_rules() {
+        let rule = |month, hour| Transition {
+            year: 0,
+            month,
+            weekday: 0,
+            week: 5,
+            hour,
+            minute: 0,
+        };
+        let berlin = TimeZone {
+            name: None,
+            bias: Some(-60),
+            standard_bias: 0,
+            daylight_bias: -60,
+            daylight_start: Some(rule(3, 2)),
+            standard_start: Some(rule(10, 3)),
+        };
+        assert_eq!(
+            berlin.offset_at(2026, 4, 18, 12, 4),
+            Some(120),
+            "exam image, April"
+        );
+        assert_eq!(berlin.offset_at(2026, 9, 8, 10, 57), Some(120), "September");
+        assert_eq!(berlin.offset_at(2026, 1, 10, 12, 0), Some(60), "winter");
+        // 2026: the last Sunday of March is the 29th, of October the 25th.
+        assert_eq!(berlin.offset_at(2026, 3, 29, 1, 59), Some(60));
+        assert_eq!(berlin.offset_at(2026, 3, 29, 2, 0), Some(120));
+        assert_eq!(berlin.offset_at(2026, 10, 25, 2, 59), Some(120));
+        assert_eq!(berlin.offset_at(2026, 10, 25, 3, 0), Some(60));
+        // Sydney: daylight time across the new year (first Sunday of October to April).
+        let sydney = TimeZone {
+            name: None,
+            bias: Some(-600),
+            standard_bias: 0,
+            daylight_bias: -60,
+            daylight_start: Some(Transition {
+                week: 1,
+                ..rule(10, 2)
+            }),
+            standard_start: Some(Transition {
+                week: 1,
+                ..rule(4, 3)
+            }),
+        };
+        assert_eq!(sydney.offset_at(2026, 1, 15, 12, 0), Some(660));
+        assert_eq!(sydney.offset_at(2026, 6, 15, 12, 0), Some(600));
+        let no_dst = TimeZone {
+            bias: Some(300),
+            ..TimeZone::default()
+        };
+        assert_eq!(no_dst.offset_at(2026, 7, 1, 12, 0), Some(-300));
     }
 
     #[test]
