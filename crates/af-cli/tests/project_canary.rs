@@ -92,12 +92,22 @@ fn project_canary() {
     // Absent inputs are reported clearly, and told apart from inputs with nothing in them.
     let status = af(&["status", c]);
     assert!(
-        status.contains("windows.user_profiles v2: not in this project"),
+        status.contains("windows.user_profiles v3: not in this project"),
         "{status}"
     );
     assert!(
-        status.contains("windows.user_profiles v2: present, nothing relevant"),
+        status.contains("windows.services v1: present, nothing relevant"),
         "{status}"
+    );
+    // R12: the loose NTUSER.DAT is a user without a SID.
+    assert!(
+        status.contains("windows.user_profiles v3: read, 1 items"),
+        "{status}"
+    );
+    let users = af(&["users", c]);
+    assert!(
+        users.contains("  unknown user 1      (loose hive, no SID known)"),
+        "{users}"
     );
     let links_before = links(&db);
     assert_eq!(

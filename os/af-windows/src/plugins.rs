@@ -176,7 +176,8 @@ impl Plugin for HiveRootKeys {
 /// NTUSER.DAT and UsrClass.dat found in its folder. A folder with a hive but no ProfileList entry
 /// is listed too, as `"in_profile_list": false` with the folder name as subject, except the
 /// `Default` and `Public` templates ProfileList names. Without a registry every folder with a hive
-/// is a profile.
+/// is a profile. A loose user hive (no folder) is a profile of its own, named by the owner the
+/// registry gave it (`unknown user 1`, R12).
 pub struct UserProfiles;
 
 pub(crate) const PROFILE_LIST: &str = "Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
@@ -231,11 +232,13 @@ fn json_str(s: &str) -> String {
     out
 }
 
-struct Profile {
+struct Profile<'a> {
     subject: String,
     sid: Option<String>,
     home: String,
     listed: bool,
+    /// A loose hive, the profile's only one.
+    loose: Option<&'a Artifact>,
 }
 
 impl Plugin for UserProfiles {
@@ -243,7 +246,7 @@ impl Plugin for UserProfiles {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.user_profiles").expect("valid kind"),
-            version: 2,
+            version: 3,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: [
@@ -295,6 +298,7 @@ impl Plugin for UserProfiles {
                     sid: Some(sid.display()),
                     home,
                     listed: true,
+                    loose: None,
                 });
             }
         }
@@ -307,16 +311,45 @@ impl Plugin for UserProfiles {
                     sid: None,
                     home: home.clone(),
                     listed: false,
+                    loose: None,
                 });
+            }
+        }
+        if let Some(reg) = ctx.caps.registry {
+            let owners: Vec<(
+                Option<String>,
+                (af_core::ids::SourceId, af_core::bytes::Locator),
+            )> = reg
+                .hives()
+                .into_iter()
+                .filter_map(|h| Some((h.owner.clone(), reg.origin(&h)?)))
+                .collect();
+            for a in ctx.artifacts.iter().filter(|a| home_of(a).is_none()) {
+                let owner = owners
+                    .iter()
+                    .find(|(_, (s, l))| *s == a.source && *l == a.locator)
+                    .and_then(|(o, _)| o.clone());
+                if let Some(owner) = owner {
+                    profiles.push(Profile {
+                        subject: owner,
+                        sid: None,
+                        home: String::new(),
+                        listed: false,
+                        loose: Some(a),
+                    });
+                }
             }
         }
         let mut n = 0;
         for p in &profiles {
-            let mine: Vec<&Artifact> = hives
-                .iter()
-                .filter(|(h, _)| same_home(h, &p.home))
-                .map(|(_, a)| *a)
-                .collect();
+            let mine: Vec<&Artifact> = match p.loose {
+                Some(a) => vec![a],
+                None => hives
+                    .iter()
+                    .filter(|(h, _)| same_home(h, &p.home))
+                    .map(|(_, a)| *a)
+                    .collect(),
+            };
             // The fact comes from ProfileList's hive, or else from the folder's first hive.
             let Some(from) = (if p.listed {
                 software
@@ -338,8 +371,14 @@ impl Plugin for UserProfiles {
             let attrs = format!(
                 r#"{{"sid": {}, "name": {}, "home": {}, "in_profile_list": {}, "hives": [{}]}}"#,
                 p.sid.as_deref().map_or("null".into(), json_str),
-                json_str(p.home.rsplit('/').next().unwrap_or("")),
-                json_str(&p.home),
+                p.home
+                    .rsplit('/')
+                    .next()
+                    .filter(|n| !n.is_empty())
+                    .map_or("null".into(), json_str),
+                Some(p.home.as_str())
+                    .filter(|h| !h.is_empty())
+                    .map_or("null".into(), json_str),
                 p.listed,
                 hive_list.join(", ")
             );

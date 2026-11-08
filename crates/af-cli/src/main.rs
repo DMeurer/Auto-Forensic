@@ -244,11 +244,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or_default();
                     let text =
                         |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let mark = if a.get("in_profile_list") == Some(&serde_json::Value::Bool(false))
+                    let mark = if a.get("in_profile_list") != Some(&serde_json::Value::Bool(false))
                     {
-                        "  (folder only, not in ProfileList)"
-                    } else {
                         ""
+                    } else if text("home").is_empty() {
+                        "  (loose hive, no SID known)"
+                    } else {
+                        "  (folder only, not in ProfileList)"
                     };
                     writeln!(
                         out,
