@@ -28,6 +28,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::bam::Bam,
     &af_windows::sam::Sam,
     &af_windows::usb::Usb,
+    &af_windows::mft::Mft,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

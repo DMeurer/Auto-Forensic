@@ -212,82 +212,108 @@ fn file_name(b: &[u8]) -> Option<FileName> {
     })
 }
 
+const SIZE: usize = 1024;
+
+/// A resident attribute: header (0x18 bytes, no name), then `content`, 8-byte aligned.
+fn attribute(type_code: u32, id: u16, content: &[u8]) -> Vec<u8> {
+    let len = (0x18 + content.len()).next_multiple_of(8);
+    let mut a = vec![0u8; len];
+    a[0..4].copy_from_slice(&type_code.to_le_bytes());
+    a[4..8].copy_from_slice(&(len as u32).to_le_bytes());
+    a[0x0E..0x10].copy_from_slice(&id.to_le_bytes());
+    a[0x10..0x14].copy_from_slice(&(content.len() as u32).to_le_bytes());
+    a[0x14..0x16].copy_from_slice(&0x18u16.to_le_bytes());
+    a[0x18..0x18 + content.len()].copy_from_slice(content);
+    a
+}
+
+/// A `FILE` record with fixups, in use, holding `attributes`.
+fn record(number: u32, sequence: u16, is_dir: bool, attributes: &[Vec<u8>]) -> Vec<u8> {
+    let mut e = vec![0u8; SIZE];
+    e[0..4].copy_from_slice(b"FILE");
+    e[4..6].copy_from_slice(&0x30u16.to_le_bytes());
+    e[6..8].copy_from_slice(&3u16.to_le_bytes());
+    e[0x10..0x12].copy_from_slice(&sequence.to_le_bytes());
+    e[0x12..0x14].copy_from_slice(&1u16.to_le_bytes());
+    e[0x14..0x16].copy_from_slice(&0x38u16.to_le_bytes());
+    e[0x16..0x18].copy_from_slice(&(1u16 | if is_dir { 2 } else { 0 }).to_le_bytes());
+    e[0x1C..0x20].copy_from_slice(&(SIZE as u32).to_le_bytes());
+    e[0x2C..0x30].copy_from_slice(&number.to_le_bytes());
+    let mut at = 0x38;
+    for a in attributes {
+        e[at..at + a.len()].copy_from_slice(a);
+        at += a.len();
+    }
+    e[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    e[0x18..0x1C].copy_from_slice(&((at + 8) as u32).to_le_bytes());
+    // Fixups: the update sequence number at the end of each 512-byte sector.
+    let usn = 7u16.to_le_bytes();
+    e[0x30..0x32].copy_from_slice(&usn);
+    for s in 0..2 {
+        let end = 512 * (s + 1) - 2;
+        let (keep0, keep1) = (e[end], e[end + 1]);
+        e[0x32 + 2 * s] = keep0;
+        e[0x33 + 2 * s] = keep1;
+        e[end..end + 2].copy_from_slice(&usn);
+    }
+    e
+}
+
+fn si(times: [u64; 4]) -> Vec<u8> {
+    let mut b = vec![0u8; 0x48];
+    for (i, t) in times.iter().enumerate() {
+        b[i * 8..i * 8 + 8].copy_from_slice(&t.to_le_bytes());
+    }
+    b[0x20..0x24].copy_from_slice(&0x20u32.to_le_bytes());
+    b[0x40..0x48].copy_from_slice(&4711u64.to_le_bytes());
+    b
+}
+
+fn fname(parent: u64, parent_seq: u16, t: u64, size: u64, name: &str) -> Vec<u8> {
+    let units: Vec<u16> = name.encode_utf16().collect();
+    let mut b = vec![0u8; 0x42 + 2 * units.len()];
+    b[0..8].copy_from_slice(&(parent | u64::from(parent_seq) << 48).to_le_bytes());
+    for i in 0..4 {
+        b[8 + i * 8..16 + i * 8].copy_from_slice(&t.to_le_bytes());
+    }
+    b[0x30..0x38].copy_from_slice(&size.to_le_bytes());
+    b[0x40] = units.len() as u8;
+    b[0x41] = 1;
+    for (i, u) in units.iter().enumerate() {
+        b[0x42 + 2 * i..0x44 + 2 * i].copy_from_slice(&u.to_le_bytes());
+    }
+    b
+}
+
+/// Builds a tiny `$MFT` for tests of this crate and others: records 0 to 4 unused, 5 the root,
+/// 6 the file `name` in it with `$SI` times `si` (created, modified, MFT modified, accessed),
+/// its long name's four `$FN` times all `fn_time`, and a DOS name (`NAME~1`) with time 1.
+pub fn build_test_mft(name: &str, si_times: [u64; 4], fn_time: u64) -> Vec<u8> {
+    let mut mft = vec![0u8; 5 * SIZE];
+    mft.extend(record(
+        5,
+        5,
+        true,
+        &[attribute(0x30, 1, &fname(5, 5, fn_time, 0, "."))],
+    ));
+    let mut dos = fname(5, 5, 1, 0, "NAME~1");
+    dos[0x41] = 2;
+    mft.extend(record(
+        6,
+        1,
+        false,
+        &[
+            attribute(0x10, 0, &si(si_times)),
+            attribute(0x30, 1, &fname(5, 5, fn_time, 3, name)),
+            attribute(0x30, 2, &dos),
+        ],
+    ));
+    mft
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SIZE: usize = 1024;
-
-    /// A resident attribute: header (0x18 bytes, no name), then `content`, 8-byte aligned.
-    fn attribute(type_code: u32, id: u16, content: &[u8]) -> Vec<u8> {
-        let len = (0x18 + content.len()).next_multiple_of(8);
-        let mut a = vec![0u8; len];
-        a[0..4].copy_from_slice(&type_code.to_le_bytes());
-        a[4..8].copy_from_slice(&(len as u32).to_le_bytes());
-        a[0x0E..0x10].copy_from_slice(&id.to_le_bytes());
-        a[0x10..0x14].copy_from_slice(&(content.len() as u32).to_le_bytes());
-        a[0x14..0x16].copy_from_slice(&0x18u16.to_le_bytes());
-        a[0x18..0x18 + content.len()].copy_from_slice(content);
-        a
-    }
-
-    /// A `FILE` record with fixups, in use, holding `attributes`.
-    fn record(number: u32, sequence: u16, is_dir: bool, attributes: &[Vec<u8>]) -> Vec<u8> {
-        let mut e = vec![0u8; SIZE];
-        e[0..4].copy_from_slice(b"FILE");
-        e[4..6].copy_from_slice(&0x30u16.to_le_bytes());
-        e[6..8].copy_from_slice(&3u16.to_le_bytes());
-        e[0x10..0x12].copy_from_slice(&sequence.to_le_bytes());
-        e[0x12..0x14].copy_from_slice(&1u16.to_le_bytes());
-        e[0x14..0x16].copy_from_slice(&0x38u16.to_le_bytes());
-        e[0x16..0x18].copy_from_slice(&(1u16 | if is_dir { 2 } else { 0 }).to_le_bytes());
-        e[0x1C..0x20].copy_from_slice(&(SIZE as u32).to_le_bytes());
-        e[0x2C..0x30].copy_from_slice(&number.to_le_bytes());
-        let mut at = 0x38;
-        for a in attributes {
-            e[at..at + a.len()].copy_from_slice(a);
-            at += a.len();
-        }
-        e[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        e[0x18..0x1C].copy_from_slice(&((at + 8) as u32).to_le_bytes());
-        // Fixups: the update sequence number at the end of each 512-byte sector.
-        let usn = 7u16.to_le_bytes();
-        e[0x30..0x32].copy_from_slice(&usn);
-        for s in 0..2 {
-            let end = 512 * (s + 1) - 2;
-            let (keep0, keep1) = (e[end], e[end + 1]);
-            e[0x32 + 2 * s] = keep0;
-            e[0x33 + 2 * s] = keep1;
-            e[end..end + 2].copy_from_slice(&usn);
-        }
-        e
-    }
-
-    fn si(times: [u64; 4]) -> Vec<u8> {
-        let mut b = vec![0u8; 0x48];
-        for (i, t) in times.iter().enumerate() {
-            b[i * 8..i * 8 + 8].copy_from_slice(&t.to_le_bytes());
-        }
-        b[0x20..0x24].copy_from_slice(&0x20u32.to_le_bytes());
-        b[0x40..0x48].copy_from_slice(&4711u64.to_le_bytes());
-        b
-    }
-
-    fn fname(parent: u64, parent_seq: u16, t: u64, size: u64, name: &str) -> Vec<u8> {
-        let units: Vec<u16> = name.encode_utf16().collect();
-        let mut b = vec![0u8; 0x42 + 2 * units.len()];
-        b[0..8].copy_from_slice(&(parent | u64::from(parent_seq) << 48).to_le_bytes());
-        for i in 0..4 {
-            b[8 + i * 8..16 + i * 8].copy_from_slice(&t.to_le_bytes());
-        }
-        b[0x30..0x38].copy_from_slice(&size.to_le_bytes());
-        b[0x40] = units.len() as u8;
-        b[0x41] = 1;
-        for (i, u) in units.iter().enumerate() {
-            b[0x42 + 2 * i..0x44 + 2 * i].copy_from_slice(&u.to_le_bytes());
-        }
-        b
-    }
 
     /// Records 0 to 4 unused, 5 the root, 6 a folder, 7 a file in it whose `$SI` created time
     /// is past the year 9999 (a FILETIME `mft` can't turn into a timestamp), 8 never used.

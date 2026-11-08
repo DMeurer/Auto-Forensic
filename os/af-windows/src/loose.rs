@@ -26,9 +26,13 @@ const RULES: &[(&str, &[&str])] = &[
     ("windows.hive.amcache", &["Root"]),
 ];
 
-/// The kind of a loose file from its bytes, or `None` if no rule matches. A hive no rule
-/// matches is still a hive: `windows.hive.unknown`.
+/// The kind of a loose file from its bytes (a hive, or an NTFS `$MFT`), or `None` if no rule
+/// matches. A hive no rule matches is still a hive: `windows.hive.unknown`.
 pub fn detect(data: &[u8]) -> Option<Kind> {
+    // An `$MFT` starts with its own file record.
+    if data.starts_with(b"FILE") {
+        return Some(Kind::new("windows.mft").expect("valid kind"));
+    }
     if !is_regf(data) {
         return None;
     }
@@ -137,6 +141,17 @@ mod tests {
         for (roots, want) in cases {
             assert_eq!(kind(roots).as_deref(), Some(*want), "{roots:?}");
         }
+    }
+
+    #[test]
+    fn mft() {
+        // The test `$MFT` leaves records 0 to 4 empty; a real one starts with the `$MFT` record.
+        let mft = af_fmt_mft::build_test_mft("a", [1; 4], 1);
+        assert_eq!(
+            detect(&mft[5 * 1024..]).map(|k| k.to_string()).as_deref(),
+            Some("windows.mft")
+        );
+        assert_eq!(detect(b"MZ"), None);
     }
 
     #[test]

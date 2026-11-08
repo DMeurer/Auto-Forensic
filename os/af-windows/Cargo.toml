@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 af-core.workspace = true
 af-fmt-evtx.workspace = true
+af-fmt-mft.workspace = true
 af-fmt-regf.workspace = true
 # YAML for event log maps (E3; user's choice): pure Rust, built not to panic, with budgets
 # against hostile input.
