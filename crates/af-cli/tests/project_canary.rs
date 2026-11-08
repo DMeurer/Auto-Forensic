@@ -85,9 +85,9 @@ fn project_canary() {
     af(&["source", "add", c, &system]);
     af(&["source", "add", c, &ntuser]);
     let first = af(&["run", c]);
-    // The hive, key-time, host, network, Run key, service, BAM and SAM plugins on both systems, and
-    // the profile plugin where an NTUSER.DAT is.
-    assert!(first.contains("17 extracted"), "{first}");
+    // The hive, key-time, host, network, Run key, service, BAM, SAM and USB plugins on both
+    // systems, and the profile plugin where an NTUSER.DAT is.
+    assert!(first.contains("19 extracted"), "{first}");
 
     // Absent inputs are reported clearly, and told apart from inputs with nothing in them.
     let status = af(&["status", c]);
@@ -129,8 +129,8 @@ fn project_canary() {
     af(&["source", "add", c, &software]);
     let second = af(&["run", c]);
     assert!(
-        second.contains("8 extracted"),
-        "only the new hive is read, by the eight registry plugins: {second}"
+        second.contains("9 extracted"),
+        "only the new hive is read, by the nine registry plugins: {second}"
     );
 
     let s = Store::open_read_only(&db).unwrap();

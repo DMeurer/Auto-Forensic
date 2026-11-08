@@ -21,6 +21,7 @@ pub mod profile;
 pub mod registry;
 pub mod registry_timeline;
 pub mod sam;
+pub mod usb;
 
 pub use profile::WindowsProfile;
 

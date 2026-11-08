@@ -182,7 +182,7 @@ fn v_text(v: &[u8], at: usize) -> Option<String> {
 }
 
 /// UTF-16LE up to the first NUL.
-fn utf16(b: &[u8]) -> Option<String> {
+pub(crate) fn utf16(b: &[u8]) -> Option<String> {
     let units: Vec<u16> = b
         .as_chunks::<2>()
         .0

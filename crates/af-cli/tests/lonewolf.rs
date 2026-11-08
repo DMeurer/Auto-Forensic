@@ -114,6 +114,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::autoruns::Services,
             &af_windows::bam::Bam,
             &af_windows::sam::Sam,
+            &af_windows::usb::Usb,
         ],
         &profiles,
     )
@@ -409,5 +410,32 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     assert_eq!(
         (accounts, logins.as_str(), last),
         (5, "23", 131_674_911_875_724_698)
+    );
+
+    // R11: RECmd's USB, USBSTOR and MountedDevices plugins (~/af-stage3/r11): 11 USB devices, 2
+    // SanDisk disks, 7 mounted devices and 41 device times. The disk mounted as D: has its own
+    // DiskId (RECmd repeats the other disk's).
+    let (devices, disks, mounted, times, d): (i64, i64, i64, i64, String) = db
+        .query_row(
+            "SELECT count(*) FILTER (WHERE kind = 'windows.usb_device'), \
+             count(*) FILTER (WHERE kind = 'windows.usb_storage'), \
+             count(*) FILTER (WHERE kind = 'windows.mounted_device'), \
+             (SELECT count(*) FROM events WHERE kind LIKE 'windows.usb.%'), \
+             max(json_extract_string(attrs, '$.disk_id') || ' ' || \
+                 json_extract_string(attrs, '$.usb_device')) \
+             FILTER (WHERE attrs LIKE '%DosDevices%D:%') FROM facts",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (devices, disks, mounted, times, d.as_str()),
+        (
+            11,
+            2,
+            7,
+            41,
+            "{3869c279-31b8-11e8-9b12-ecf4bb487fed} VID_0781&PID_5580\\AA010603160707470215"
+        )
     );
 }
