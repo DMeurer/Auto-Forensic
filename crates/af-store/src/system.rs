@@ -145,6 +145,10 @@ impl Project {
             }
             ids.push(id);
         }
+        if ids.is_empty() {
+            // No volume this build can read (a FAT stick before stage 5a): still one system.
+            ids.push(self.add_system(source.id, &Family::None, Some(&source.label), &[])?);
+        }
         self.store.save_artifacts(&index)?;
         Ok(ids)
     }
@@ -302,6 +306,31 @@ mod tests {
         p.add_system(SourceId(3), &Family::None, Some("USB"), &usb)
             .unwrap();
         assert!(p.merge_suggestions().unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_with_nothing_readable_is_one_none_system() {
+        let (dir, mut p) = project();
+        let image = dir.join("blank.raw");
+        std::fs::write(&image, vec![0u8; 1 << 20]).unwrap();
+        let source = crate::source::SourceInfo {
+            id: SourceId::new_random(),
+            kind: "image".into(),
+            label: "blank.raw".into(),
+            size: 1 << 20,
+            sha256: String::new(),
+            fingerprint: String::new(),
+            files: vec![image],
+        };
+        let ids = p
+            .add_systems(&source, &[&af_core::profile::NoneProfile])
+            .unwrap();
+        assert_eq!(ids.len(), 1);
+        let rows = p.systems().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].family, "none");
+        assert_eq!(rows[0].label.as_deref(), Some("blank.raw"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
