@@ -85,8 +85,9 @@ fn project_canary() {
     af(&["source", "add", c, &system]);
     af(&["source", "add", c, &ntuser]);
     let first = af(&["run", c]);
-    // The hive plugin on both systems, and the profile plugin where an NTUSER.DAT is.
-    assert!(first.contains("3 extracted"), "{first}");
+    // The hive and key-time plugins on both systems, and the profile plugin where an
+    // NTUSER.DAT is.
+    assert!(first.contains("5 extracted"), "{first}");
 
     // Absent inputs are reported clearly, and told apart from inputs with nothing in them.
     let status = af(&["status", c]);
@@ -118,8 +119,8 @@ fn project_canary() {
     af(&["source", "add", c, &software]);
     let second = af(&["run", c]);
     assert!(
-        second.contains("1 extracted"),
-        "only the new hive is read: {second}"
+        second.contains("2 extracted"),
+        "only the new hive is read, by the hive and key-time plugins: {second}"
     );
 
     let s = Store::open_read_only(&db).unwrap();
@@ -127,11 +128,13 @@ fn project_canary() {
         s.tags_of(&Endpoint::Event(EventId(tagged))).unwrap(),
         ["suspicious"]
     );
-    assert_eq!(
-        s.events().unwrap().len(),
-        3,
-        "one time event per hive, none twice"
-    );
+    let events = s.events().unwrap();
+    let root_times = events
+        .iter()
+        .filter(|e| e.kind == "windows.hive.root_written")
+        .count();
+    assert_eq!(root_times, 3, "one root time event per hive, none twice");
+    assert_eq!(events.len(), 15, "and R7's key times: 4 keys in each hive");
     drop(s);
     let links_after = links(&db);
     assert_eq!(links_after.len(), 9, "links rebuilt for all three hives");
@@ -162,7 +165,7 @@ fn project_canary() {
             s.tags_of(&Endpoint::Event(EventId(tagged))).unwrap(),
             ["suspicious"]
         );
-        assert_eq!(s.events().unwrap().len(), 3, "the stick adds no events");
+        assert_eq!(s.events().unwrap().len(), 15, "the stick adds no events");
     }
     std::fs::remove_dir_all(&parent).unwrap();
 }
