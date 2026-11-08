@@ -146,7 +146,7 @@ impl Plugin for RunKeys {
 
 /// A value name as plain text: unlike [`Name::display`], `\` stays as it is (value names may
 /// hold it, as `Uninstall 18.025.0204.0009\amd64` in RunOnce).
-fn plain(n: &Name) -> String {
+pub(crate) fn plain(n: &Name) -> String {
     match n {
         Name::Utf16(u) => String::from_utf16_lossy(u),
         Name::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
@@ -186,16 +186,8 @@ impl Plugin for Services {
         };
         let id = self.manifest().id.clone();
         let system = system_hive();
-        let Some(root) = reg.key(&system, &path("")) else {
-            return Outcome::Ok(0);
-        };
         let mut n = 0;
-        let sets = root.subkeys.iter().map(Name::display).filter(|s| {
-            s.len() == 13
-                && s[..10].eq_ignore_ascii_case("ControlSet")
-                && s[10..].bytes().all(|b| b.is_ascii_digit())
-        });
-        for set in sets {
+        for set in control_sets(reg) {
             let at = format!("{set}\\Services");
             let Some(list) = reg.key(&system, &path(&at)) else {
                 continue;
@@ -235,6 +227,22 @@ impl Plugin for Services {
         }
         Outcome::Ok(n)
     }
+}
+
+/// The SYSTEM hive's control sets: root keys named `ControlSet` and three digits.
+pub(crate) fn control_sets(reg: &dyn Registry) -> Vec<String> {
+    let Some(root) = reg.key(&system_hive(), &path("")) else {
+        return vec![];
+    };
+    root.subkeys
+        .iter()
+        .map(Name::display)
+        .filter(|s| {
+            s.len() == 13
+                && s[..10].eq_ignore_ascii_case("ControlSet")
+                && s[10..].bytes().all(|b| b.is_ascii_digit())
+        })
+        .collect()
 }
 
 /// `Start` as RECmd names it.

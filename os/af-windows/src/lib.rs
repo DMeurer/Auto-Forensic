@@ -10,6 +10,7 @@
 //! | `SYSTEMTIME` in local time (NetworkList dates) | [`af_core::time::encoding::LOCAL_CALENDAR`] |
 
 pub mod autoruns;
+pub mod bam;
 pub mod evtx;
 pub mod evtx_map;
 pub mod host;

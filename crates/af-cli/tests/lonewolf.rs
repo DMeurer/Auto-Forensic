@@ -112,6 +112,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::network::Network,
             &af_windows::autoruns::RunKeys,
             &af_windows::autoruns::Services,
+            &af_windows::bam::Bam,
         ],
         &profiles,
     )
@@ -378,4 +379,17 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         )
         .unwrap();
     assert_eq!(services, 656);
+
+    // R13: RECmd's Bam plugin on LoneWolf's SYSTEM (~/af-stage3/r13): 31 entries in the 1709
+    // layout, csrss.exe last run by SYSTEM at 2018-04-06 12:40:38.8104203 UTC.
+    let (bam, csrss): (i64, i64) = db
+        .query_row(
+            "SELECT count(*), max(e.ts) FILTER (WHERE r.attrs LIKE '%csrss.exe%' \
+             AND r.attrs LIKE '%\"S-1-5-18\"%') FROM events e JOIN records r ON r.id = e.record \
+             WHERE e.kind = 'windows.bam.last_run'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((bam, csrss), (31, 131_674_920_388_104_203));
 }

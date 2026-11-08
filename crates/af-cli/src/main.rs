@@ -25,6 +25,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::network::Network,
     &af_windows::autoruns::RunKeys,
     &af_windows::autoruns::Services,
+    &af_windows::bam::Bam,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];
