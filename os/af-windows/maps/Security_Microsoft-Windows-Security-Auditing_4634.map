@@ -1,0 +1,30 @@
+Author: af (E4), giving EvtxECmd's fields
+Description: An account was logged off
+EventId: 4634
+Channel: Security
+Provider: Microsoft-Windows-Security-Auditing
+Maps:
+  -
+    Property: PayloadData1
+    PropertyValue: "Target: %TargetDomainName%\\%TargetUserName%"
+    Values:
+      -
+        Name: TargetDomainName
+        Value: "/Event/EventData/Data[@Name=\"TargetDomainName\"]"
+      -
+        Name: TargetUserName
+        Value: "/Event/EventData/Data[@Name=\"TargetUserName\"]"
+  -
+    Property: PayloadData2
+    PropertyValue: "LogonType %LogonType%"
+    Values:
+      -
+        Name: LogonType
+        Value: "/Event/EventData/Data[@Name=\"LogonType\"]"
+  -
+    Property: PayloadData3
+    PropertyValue: "LogonId: %TargetLogonId%"
+    Values:
+      -
+        Name: TargetLogonId
+        Value: "/Event/EventData/Data[@Name=\"TargetLogonId\"]"

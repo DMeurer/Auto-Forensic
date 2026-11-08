@@ -60,6 +60,17 @@ enum Command {
     Run { project: PathBuf },
     /// Each system's users with their hives, as the last run found them.
     Users { project: PathBuf },
+    /// Events in timeline order as tab-separated lines. Event log records get EvtxECmd's fields
+    /// from maps: the project's `maps/*.map` first, then the compiled-in ones.
+    Events {
+        project: PathBuf,
+        /// Only events of this kind, such as `windows.evtx.4624`.
+        #[arg(long)]
+        kind: Option<String>,
+        /// At most this many events.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -201,6 +212,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 r.events_loaded
             )?;
         }
+        Command::Events {
+            project,
+            kind,
+            limit,
+        } => events(&project, kind.as_deref(), limit, &mut out)?,
         Command::Users { project } => {
             let p = Project::open_read_only(&project, wait())?;
             let mut facts = p.store.facts()?;
@@ -393,6 +409,87 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
         },
+    }
+    Ok(())
+}
+
+/// `af events`: the project's maps, then the compiled-in ones, applied to each event log record.
+fn events(
+    project: &std::path::Path,
+    kind: Option<&str>,
+    limit: Option<u64>,
+    out: &mut dyn Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use af_windows::evtx_map::{BUILTIN, EventMap, map_event};
+    let p = Project::open_read_only(project, wait())?;
+    let mut maps = vec![];
+    if let Ok(dir) = std::fs::read_dir(project.join("maps")) {
+        let mut files: Vec<_> = dir
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|f| f.extension().is_some_and(|x| x == "map"))
+            .collect();
+        files.sort();
+        for f in files {
+            match std::fs::read_to_string(&f)
+                .map_err(|e| e.to_string())
+                .and_then(|t| EventMap::parse(&t))
+            {
+                Ok(m) => maps.push(m),
+                Err(e) => eprintln!("map {} skipped: {e}", f.display()),
+            }
+        }
+    }
+    maps.extend(BUILTIN.iter().filter_map(|(_, t)| EventMap::parse(t).ok()));
+    let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
+    let mut lines = vec![];
+    let mut used: Vec<usize> = vec![];
+    for (e, record, attrs) in p.store.event_list(kind, limit)? {
+        let time = Time::from_columns(&e.time)
+            .map(|t| t.display())
+            .unwrap_or_default();
+        let event: Option<serde_json::Value> =
+            attrs.as_deref().and_then(|a| serde_json::from_str(a).ok());
+        let mapped = event.as_ref().and_then(|ev| map_event(&maps, ev));
+        let mut cols = vec![time, e.kind.clone(), e.meaning.clone()];
+        match mapped {
+            Some((m, f)) => {
+                let i = maps.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(0);
+                if !used.contains(&i) {
+                    used.push(i);
+                }
+                cols.extend([f.description, f.user_name, f.remote_host, f.executable_info]);
+                cols.extend(f.payload);
+            }
+            None => cols.extend(std::iter::repeat_n(String::new(), 10)),
+        }
+        cols.push(record.unwrap_or_default());
+        lines.push(cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t"));
+    }
+    // A note shows when its map was used or its event was asked for, even with no events: it
+    // says why one may be missing (such as an audit policy that was off).
+    let asked = kind.and_then(|k| k.strip_prefix("windows.evtx.")?.parse::<u32>().ok());
+    for (i, m) in maps.iter().enumerate() {
+        if let Some(n) = &m.note
+            && (used.contains(&i) || asked == Some(m.event_id))
+        {
+            writeln!(
+                out,
+                "# note on event {} ({}): {}",
+                m.event_id,
+                m.description,
+                clean(n)
+            )?;
+        }
+    }
+    writeln!(
+        out,
+        "time\tkind\tmeaning\tdescription\tuser_name\tremote_host\texecutable_info\t\
+         payload_data1\tpayload_data2\tpayload_data3\tpayload_data4\tpayload_data5\tpayload_data6\t\
+         record"
+    )?;
+    for l in lines {
+        writeln!(out, "{l}")?;
     }
     Ok(())
 }

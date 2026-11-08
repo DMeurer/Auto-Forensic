@@ -1,0 +1,79 @@
+Author: af (E4), giving EvtxECmd's fields
+Description: A new process has been created
+EventId: 4688
+Channel: Security
+Provider: Microsoft-Windows-Security-Auditing
+Note: >-
+  Windows logs 4688 only while the audit policy "Audit Process Creation" (Detailed Tracking) is
+  on, which it isn't by default, and the command line only if "Include command line in process
+  creation events" is on too. No 4688 events doesn't mean no process ran.
+Maps:
+  -
+    Property: UserName
+    PropertyValue: "%domain%\\%user%"
+    Values:
+      -
+        Name: domain
+        Value: "/Event/EventData/Data[@Name=\"SubjectDomainName\"]"
+      -
+        Name: user
+        Value: "/Event/EventData/Data[@Name=\"SubjectUserName\"]"
+  -
+    Property: ExecutableInfo
+    PropertyValue: "%NewProcessName% %CommandLine%"
+    Values:
+      -
+        Name: NewProcessName
+        Value: "/Event/EventData/Data[@Name=\"NewProcessName\"]"
+      -
+        Name: CommandLine
+        Value: "/Event/EventData/Data[@Name=\"CommandLine\"]"
+  -
+    Property: PayloadData1
+    PropertyValue: "Parent process: %ParentProcessName%"
+    Values:
+      -
+        Name: ParentProcessName
+        Value: "/Event/EventData/Data[@Name=\"ParentProcessName\"]"
+  -
+    Property: PayloadData2
+    PropertyValue: "PID: %NewProcessId%"
+    Values:
+      -
+        Name: NewProcessId
+        Value: "/Event/EventData/Data[@Name=\"NewProcessId\"]"
+  -
+    Property: PayloadData3
+    PropertyValue: "Parent PID: %ProcessId%"
+    Values:
+      -
+        Name: ProcessId
+        Value: "/Event/EventData/Data[@Name=\"ProcessId\"]"
+  -
+    Property: PayloadData4
+    PropertyValue: "Mandatory label: %MandatoryLabel%"
+    Values:
+      -
+        Name: MandatoryLabel
+        Value: "/Event/EventData/Data[@Name=\"MandatoryLabel\"]"
+  -
+    Property: PayloadData5
+    PropertyValue: "Target User: %TargetDomainName%\\%TargetUserName%"
+    Values:
+      -
+        Name: TargetDomainName
+        Value: "/Event/EventData/Data[@Name=\"TargetDomainName\"]"
+      -
+        Name: TargetUserName
+        Value: "/Event/EventData/Data[@Name=\"TargetUserName\"]"
+Lookups:
+  -
+    Name: MandatoryLabel
+    Values:
+      S-1-16-0: SECURITY_MANDATORY_UNTRUSTED_RID
+      S-1-16-4096: SECURITY_MANDATORY_LOW_RID
+      S-1-16-8192: SECURITY_MANDATORY_MEDIUM_RID
+      S-1-16-8448: SECURITY_MANDATORY_MEDIUM_PLUS_RID
+      S-1-16-12288: SECURITY_MANDATORY_HIGH_RID
+      S-1-16-16384: SECURITY_MANDATORY_SYSTEM_RID
+      S-1-16-20480: SECURITY_MANDATORY_PROTECTED_PROCESS_RID

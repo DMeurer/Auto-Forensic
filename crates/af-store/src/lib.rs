@@ -506,43 +506,67 @@ impl Store {
         Ok(runs)
     }
 
+    /// Events in timeline order (no time last, then by sequence) with their record's locator
+    /// and attributes, of one kind if given, at most `limit`.
+    #[allow(clippy::type_complexity)]
+    pub fn event_list(
+        &self,
+        kind: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<(EventRow, Option<String>, Option<String>)>, Error> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {EVENT_COLUMNS}, r.locator, r.attrs FROM events e LEFT JOIN records r ON r.id = e.record \
+             WHERE ?1 IS NULL OR e.kind = ?1 \
+             ORDER BY e.ts NULLS LAST, e.seq_domain, e.seq_no, e.id LIMIT ?2"
+        ))?;
+        let limit = i64::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(i64::MAX);
+        stmt.query_map(params![kind, limit], |r| {
+            Ok((event_row(r)?, r.get(21)?, r.get(22)?))
+        })?
+        .collect()
+    }
+
     /// All events, ordered by ID.
     pub fn events(&self) -> Result<Vec<EventRow>, Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, source, record, system, kind, meaning, ts, ts_min, ts_max, raw_i64, raw_text, \
-             raw_encoding, time_status, precision_ticks, tz_status, tz_offset_min, \
-             conversion_version, clock_domain, seq_domain, seq_no, created_by \
-             FROM events ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(EventRow {
-                id: r.get(0)?,
-                source: r.get(1)?,
-                record: r.get(2)?,
-                system: r.get(3)?,
-                kind: r.get(4)?,
-                meaning: r.get(5)?,
-                time: TimeColumns {
-                    ts: r.get(6)?,
-                    ts_min: r.get(7)?,
-                    ts_max: r.get(8)?,
-                    raw_i64: r.get(9)?,
-                    raw_text: r.get(10)?,
-                    raw_encoding: r.get(11)?,
-                    time_status: r.get(12)?,
-                    precision_ticks: r.get(13)?,
-                    tz_status: r.get(14)?,
-                    tz_offset_min: r.get(15)?,
-                    conversion_version: r.get(16)?,
-                },
-                clock_domain: r.get(17)?,
-                seq_domain: r.get(18)?,
-                seq_no: r.get(19)?,
-                created_by: r.get(20)?,
-            })
-        })?;
-        rows.collect()
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {EVENT_COLUMNS} FROM events e ORDER BY e.id"
+        ))?;
+        stmt.query_map([], event_row)?.collect()
     }
+}
+
+/// An event row's columns, for [`event_row`].
+const EVENT_COLUMNS: &str = "e.id, e.source, e.record, e.system, e.kind, e.meaning, e.ts, e.ts_min, \
+    e.ts_max, e.raw_i64, e.raw_text, e.raw_encoding, e.time_status, e.precision_ticks, \
+    e.tz_status, e.tz_offset_min, e.conversion_version, e.clock_domain, e.seq_domain, e.seq_no, \
+    e.created_by";
+
+fn event_row(r: &duckdb::Row<'_>) -> duckdb::Result<EventRow> {
+    Ok(EventRow {
+        id: r.get(0)?,
+        source: r.get(1)?,
+        record: r.get(2)?,
+        system: r.get(3)?,
+        kind: r.get(4)?,
+        meaning: r.get(5)?,
+        time: TimeColumns {
+            ts: r.get(6)?,
+            ts_min: r.get(7)?,
+            ts_max: r.get(8)?,
+            raw_i64: r.get(9)?,
+            raw_text: r.get(10)?,
+            raw_encoding: r.get(11)?,
+            time_status: r.get(12)?,
+            precision_ticks: r.get(13)?,
+            tz_status: r.get(14)?,
+            tz_offset_min: r.get(15)?,
+            conversion_version: r.get(16)?,
+        },
+        clock_domain: r.get(17)?,
+        seq_domain: r.get(18)?,
+        seq_no: r.get(19)?,
+        created_by: r.get(20)?,
+    })
 }
 
 #[cfg(test)]

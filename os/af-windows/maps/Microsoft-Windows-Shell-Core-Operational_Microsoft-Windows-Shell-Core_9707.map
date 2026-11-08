@@ -1,0 +1,13 @@
+Author: af (E4), giving EvtxECmd's fields
+Description: Started execution of command
+EventId: 9707
+Channel: Microsoft-Windows-Shell-Core/Operational
+Provider: Microsoft-Windows-Shell-Core
+Maps:
+  -
+    Property: ExecutableInfo
+    PropertyValue: "%Command%"
+    Values:
+      -
+        Name: Command
+        Value: "/Event/EventData/Data[@Name=\"Command\"]"

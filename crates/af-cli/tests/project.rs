@@ -316,3 +316,86 @@ fn a_dirty_hive_without_logs_is_reported() {
     assert!(!status.contains("config/SOFTWARE is dirty"), "{status}");
     std::fs::remove_dir_all(&parent).unwrap();
 }
+
+/// E3: a map in the project's `maps` folder changes `af events` output with no rebuild, ahead of
+/// the compiled-in 4624 map (E4); a broken map is skipped with a message.
+#[test]
+fn a_project_map_changes_af_events_output() {
+    use af_core::time::Time;
+    use af_store::{EventRow, RecordRow};
+    let case = tempfile::tempdir().unwrap();
+    let mut p = af_store::project::Project::create(case.path(), "maps").unwrap();
+    let event = r##"{"System":{"Provider":{"#attributes":{"Name":"Microsoft-Windows-Security-Auditing"}},
+        "EventID":4624,"Channel":"Security"},
+        "EventData":{"SubjectUserName":"me","SubjectDomainName":"PC","TargetUserName":"jcloudy",
+        "TargetDomainName":"DESKTOP","LogonType":2}}"##;
+    p.store
+        .insert_records(&[RecordRow {
+            id: 7,
+            source: 1,
+            system: 1,
+            kind: "windows.evtx.record".into(),
+            locator: "source.loose:1/evtx.record:42".into(),
+            attrs: Some(event.into()),
+            created_by: "windows.evtx.events".into(),
+        }])
+        .unwrap();
+    p.store
+        .insert_events(&[EventRow {
+            id: 1,
+            source: 1,
+            record: 7,
+            system: 1,
+            kind: "windows.evtx.4624".into(),
+            meaning: "evtx.time_created".into(),
+            time: Time::from_ticks_1601(131_666_157_609_012_671).to_columns(),
+            clock_domain: "wall".into(),
+            seq_domain: Some("source.loose:1".into()),
+            seq_no: Some(42),
+            created_by: "windows.evtx.events".into(),
+        }])
+        .unwrap();
+    drop(p);
+    let c = case.path().to_str().unwrap();
+    let row = |out: &str| {
+        out.lines()
+            .find(|l| l.contains("windows.evtx.4624"))
+            .unwrap()
+            .to_string()
+    };
+
+    let (ok, out, err) = af(&["events", c]);
+    assert!(ok, "{err}");
+    let line = row(&out);
+    let fields: Vec<&str> = line.split('\t').collect();
+    assert_eq!(fields[0], "2018-03-27 09:16:00.9012671 UTC");
+    assert_eq!(
+        &fields[3..8],
+        [
+            "Successful logon",
+            "PC\\me",
+            " ()",
+            "",
+            "Target: DESKTOP\\jcloudy"
+        ]
+    );
+    assert_eq!(fields[13], "source.loose:1/evtx.record:42");
+
+    let maps = case.path().join("maps");
+    std::fs::create_dir(&maps).unwrap();
+    std::fs::write(
+        maps.join("mine.map"),
+        "EventId: 4624\nChannel: Security\nProvider: Microsoft-Windows-Security-Auditing\n\
+         Description: My logon\nMaps:\n  - Property: PayloadData1\n    PropertyValue: \"who: %u%\"\n    \
+         Values:\n      - Name: u\n        Value: \"/Event/EventData/Data[@Name='TargetUserName']\"\n",
+    )
+    .unwrap();
+    std::fs::write(maps.join("broken.map"), "EventId: [").unwrap();
+    let (ok, out, err) = af(&["events", c]);
+    assert!(ok, "{err}");
+    assert!(err.contains("broken.map skipped"), "{err}");
+    let line = row(&out);
+    let fields: Vec<&str> = line.split('\t').collect();
+    assert_eq!(fields[3], "My logon");
+    assert_eq!(fields[7], "who: jcloudy");
+}

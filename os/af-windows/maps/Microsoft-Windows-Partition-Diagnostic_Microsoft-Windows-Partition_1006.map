@@ -1,0 +1,55 @@
+Author: af (E4), giving EvtxECmd's fields
+Description: USB/VHD Insertion/Removal
+EventId: 1006
+Channel: Microsoft-Windows-Partition/Diagnostic
+Provider: Microsoft-Windows-Partition
+Maps:
+  -
+    Property: ExecutableInfo
+    PropertyValue: "Location: %Location%"
+    Values:
+      -
+        Name: Location
+        Value: "/Event/EventData/Data[@Name=\"Location\"]"
+  -
+    Property: PayloadData1
+    PropertyValue: "Model: %Model%"
+    Values:
+      -
+        Name: Model
+        Value: "/Event/EventData/Data[@Name=\"Model\"]"
+  -
+    Property: PayloadData2
+    PropertyValue: "Capacity: %Capacity%"
+    Values:
+      -
+        Name: Capacity
+        Value: "/Event/EventData/Data[@Name=\"Capacity\"]"
+  -
+    Property: PayloadData3
+    PropertyValue: "Manufacturer: %Manufacturer%"
+    Values:
+      -
+        Name: Manufacturer
+        Value: "/Event/EventData/Data[@Name=\"Manufacturer\"]"
+  -
+    Property: PayloadData4
+    PropertyValue: "SCSI SerialNumber: %SerialNumber%"
+    Values:
+      -
+        Name: SerialNumber
+        Value: "/Event/EventData/Data[@Name=\"SerialNumber\"]"
+  -
+    Property: PayloadData5
+    PropertyValue: "RegistryId: %RegistryId%"
+    Values:
+      -
+        Name: RegistryId
+        Value: "/Event/EventData/Data[@Name=\"RegistryId\"]"
+  -
+    Property: PayloadData6
+    PropertyValue: "ParentId: %ParentId%"
+    Values:
+      -
+        Name: ParentId
+        Value: "/Event/EventData/Data[@Name=\"ParentId\"]"
