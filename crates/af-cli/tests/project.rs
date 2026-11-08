@@ -271,7 +271,8 @@ fn a_linux_root_is_detected_and_read() {
 }
 
 /// R3: a Windows folder whose SYSTEM hive is dirty and has no logs; `af status` says so after a
-/// run, and SOFTWARE, closed cleanly, gets no note.
+/// run, and SOFTWARE, closed cleanly, gets no note. E2: an event log that isn't one is a note
+/// too, and it stays after a second run, which doesn't extract again.
 #[test]
 fn a_dirty_hive_without_logs_is_reported() {
     let parent = std::env::temp_dir().join(format!("af-cli-dirty-{}", std::process::id()));
@@ -287,14 +288,24 @@ fn a_dirty_hive_without_logs_is_reported() {
         af_fmt_regf::build_test_hive(&["Microsoft"], "lh"),
     )
     .unwrap();
+    let logs = parent.join("pc/Windows/System32/winevt/Logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(logs.join("Broken.evtx"), b"not an event log").unwrap();
     let case = parent.join("case");
     let c = case.to_str().unwrap();
     assert!(af(&["project", "new", c]).0);
     let (ok, _, err) = af(&["source", "add", c, parent.join("pc").to_str().unwrap()]);
     assert!(ok, "{err}");
-    let (ok, _, err) = af(&["run", c]);
-    assert!(ok, "{err}");
+    for _ in 0..2 {
+        let (ok, _, err) = af(&["run", c]);
+        assert!(ok, "{err}");
+    }
     let (_, status, _) = af(&["status", c]);
+    assert!(
+        status
+            .contains("    note: event log Windows/System32/winevt/Logs/Broken.evtx wasn't read: "),
+        "{status}"
+    );
     assert!(
         status.contains(
             "    note: hive Windows/System32/config/SYSTEM is dirty and its transaction logs \

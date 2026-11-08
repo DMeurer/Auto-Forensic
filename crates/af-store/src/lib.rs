@@ -13,8 +13,9 @@
 //! - `run_log`: which plugin version extracted which inputs on which system (F24).
 //! - `tags`: the analyst's tags on events, groups, facts or files; they survive re-runs (F25).
 //! - `outcomes`: each plugin's last outcome per system, for `af status` (F26).
-//! - `system_notes`: what the last run couldn't read cleanly per system, such as a dirty hive
-//!   without its logs (R3).
+//! - `system_notes`: what couldn't be read cleanly per system, such as a dirty hive without its
+//!   logs (R3, from the profile's registry, remade every run) or a damaged event log (E2, from
+//!   a plugin, remade with its output).
 //! - `groups` and `group_members`: groups with a reason and a range from their members (F27).
 //! - `lists` and `list_entries`: named timeline lists of event and group references (F28).
 //! - `facts`: data without a time of its own, with stable IDs (F30).
@@ -115,7 +116,8 @@ CREATE TABLE IF NOT EXISTS system_facts (
 );
 CREATE TABLE IF NOT EXISTS system_notes (
     system UHUGEINT NOT NULL,
-    note VARCHAR NOT NULL
+    note VARCHAR NOT NULL,
+    created_by VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS run_log (
     plugin VARCHAR NOT NULL,
@@ -253,6 +255,19 @@ pub struct Store {
     conn: Connection,
 }
 
+/// One record row: a source row its events point at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordRow {
+    pub id: u128,
+    pub source: u128,
+    pub system: u128,
+    pub kind: String,
+    pub locator: String,
+    /// The row's content as JSON text.
+    pub attrs: Option<String>,
+    pub created_by: String,
+}
+
 /// One event row. The record and its attributes are stored separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
@@ -303,6 +318,32 @@ impl Store {
     /// The underlying connection, for queries not wrapped here yet.
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn insert_records(&mut self, rows: &[RecordRow]) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut app = tx.appender("records")?;
+            for r in rows {
+                app.append_row(params![
+                    r.id,
+                    r.source,
+                    r.system,
+                    r.kind,
+                    r.locator,
+                    None::<u64>,
+                    None::<String>,
+                    None::<String>,
+                    None::<String>,
+                    None::<Vec<u8>>,
+                    None::<String>,
+                    None::<String>,
+                    r.attrs,
+                    r.created_by,
+                ])?;
+            }
+        }
+        tx.commit()
     }
 
     pub fn insert_events(&mut self, rows: &[EventRow]) -> Result<(), Error> {
@@ -361,7 +402,7 @@ impl Store {
         };
         let result = (|| {
             let tx = self.conn.transaction()?;
-            for table in ["records", "entities", "facts", "links"] {
+            for table in ["records", "entities", "facts", "links", "system_notes"] {
                 tx.execute_batch(&format!("INSERT INTO {table} {};", union(table)))?;
             }
             let n = tx.execute(

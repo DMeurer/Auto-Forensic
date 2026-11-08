@@ -22,7 +22,7 @@ impl Store {
             "DELETE FROM events WHERE created_by = ? AND system = ?",
             params![plugin, system],
         )?;
-        for table in ["records", "entities", "facts"] {
+        for table in ["records", "entities", "facts", "system_notes"] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE created_by = ? AND system = ?"),
                 params![plugin, system],

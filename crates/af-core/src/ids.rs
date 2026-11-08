@@ -123,6 +123,15 @@ impl FactId {
     }
 }
 
+/// The stable ID of a record (one source row, such as an event log record), from its source ID
+/// and its locator.
+pub fn record_id(source: &str, locator: &Locator) -> u128 {
+    stable_u128(
+        b"af.record.v1",
+        &[source.as_bytes(), locator.to_string().as_bytes()],
+    )
+}
+
 /// First 128 bits of SHA-256 over a tag and length-prefixed fields.
 fn stable_u128(tag: &[u8], fields: &[&[u8]]) -> u128 {
     let mut h = Sha256::new();

@@ -106,6 +106,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         &[
             &af_windows::plugins::HiveRootKeys,
             &af_windows::plugins::UserProfiles,
+            &af_windows::evtx::EventLogs,
         ],
         &profiles,
     )
@@ -155,8 +156,11 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     // R3: SYSTEM, SOFTWARE, DEFAULT, Amcache and jcloudy's NTUSER.DAT are dirty, and all
     // replay from their logs, so no hive gets a note.
     assert!(!status.contains("note: hive"), "{status}");
+    // E1: every log reads, so no event log gets a note either.
+    assert!(!status.contains("note:"), "{status}");
     for line in [
-        "  windows.evtx: 146 (no plugin reads this kind yet)",
+        "  windows.evtx: 146",
+        "    windows.evtx.events v1: read, 55638 items",
         "  windows.prefetch: 161 (no plugin reads this kind yet)",
         "  windows.hive.log: 22 (no plugin reads this kind yet)",
         "  windows.hive.system: 1",
@@ -164,4 +168,33 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     ] {
         assert!(status.lines().any(|l| l == line), "{line} in {status}");
     }
+
+    // E2: Security's 4624 events, as EvtxECmd lists them (827, the earliest record 406).
+    let p = Project::open(case.path()).unwrap();
+    let db = p.store.connection();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind = 'windows.evtx.4624'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 827);
+    let (seq_domain, raw, attrs): (String, i64, String) = db
+        .query_row(
+            "SELECT e.seq_domain, e.raw_i64, r.attrs FROM events e JOIN records r \
+             ON r.id = e.record WHERE e.kind = 'windows.evtx.4624' AND e.seq_no = 406",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        seq_domain.ends_with("/fs.path:Windows%2FSystem32%2Fwinevt%2FLogs%2FSecurity.evtx"),
+        "the record number counts within its log: {seq_domain}"
+    );
+    assert_eq!(
+        raw, 131_666_157_609_012_671,
+        "2018-03-27 09:16:00.9012671 UTC"
+    );
+    assert!(attrs.contains("\"EventData\""), "{attrs}");
 }

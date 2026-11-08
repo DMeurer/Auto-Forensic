@@ -35,14 +35,21 @@ impl Store {
         tx.commit()
     }
 
-    /// Replaces the stored system notes with the last run's.
-    pub fn save_system_notes(&mut self, notes: &[(SystemId, String)]) -> Result<(), Error> {
+    /// Replaces the system notes `created_by` made with `notes`.
+    pub fn save_system_notes(
+        &mut self,
+        created_by: &str,
+        notes: &[(SystemId, String)],
+    ) -> Result<(), Error> {
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM system_notes;")?;
+        tx.execute(
+            "DELETE FROM system_notes WHERE created_by = ?",
+            [created_by],
+        )?;
         for (system, note) in notes {
             tx.execute(
-                "INSERT INTO system_notes VALUES (?, ?)",
-                params![system.0, note],
+                "INSERT INTO system_notes VALUES (?, ?, ?)",
+                params![system.0, note, created_by],
             )?;
         }
         tx.commit()

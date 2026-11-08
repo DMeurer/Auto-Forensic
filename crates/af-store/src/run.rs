@@ -10,7 +10,7 @@
 use crate::facts::FactRow;
 use crate::project::{Project, ProjectError};
 use crate::source::SourceInfo;
-use crate::{EventRow, Store};
+use crate::{EventRow, RecordRow, Store};
 use af_core::artifact::Artifact;
 use af_core::bytes::{ByteSource, ExtentSource, Locator};
 use af_core::capability::Capabilities;
@@ -19,7 +19,7 @@ use af_core::ids::SourceId;
 use af_core::ids::SystemId;
 use af_core::names::Kind;
 use af_core::path::{NameKind, ViewPath};
-use af_core::runner::{NewEvent, NewFact, NewLink, Opener, Plugin, Sink, Target, run};
+use af_core::runner::{NewEvent, NewFact, NewLink, NewRecord, Opener, Plugin, Sink, Target, run};
 use af_core::system::{Family, System, VolumeId};
 use af_fs_archive::Archive;
 use af_fs_ntfs::Ntfs;
@@ -29,6 +29,9 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+/// Who the notes of a profile's registry are by (R3).
+const REGISTRY_NOTES: &str = "af.registry";
 
 /// What a run did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +47,9 @@ struct SpoolSink {
     events: Vec<EventRow>,
     facts: Vec<FactRow>,
     links: Vec<(NewLink, String)>,
+    records: Vec<RecordRow>,
+    /// (system, note, plugin)
+    notes: Vec<(SystemId, String, String)>,
 }
 
 impl Sink for SpoolSink {
@@ -78,6 +84,20 @@ impl Sink for SpoolSink {
     }
     fn link(&mut self, plugin: &Kind, l: NewLink) {
         self.links.push((l, plugin.as_str().into()));
+    }
+    fn record(&mut self, plugin: &Kind, system: SystemId, r: NewRecord) {
+        self.records.push(RecordRow {
+            id: r.id,
+            source: r.source.0,
+            system: system.0,
+            kind: r.kind.as_str().into(),
+            locator: r.locator.to_string(),
+            attrs: r.attrs,
+            created_by: plugin.as_str().into(),
+        });
+    }
+    fn note(&mut self, plugin: &Kind, system: SystemId, text: String) {
+        self.notes.push((system, text, plugin.as_str().into()));
     }
 }
 
@@ -255,6 +275,8 @@ pub fn run_project(
         events: vec![],
         facts: vec![],
         links: vec![],
+        records: vec![],
+        notes: vec![],
     };
     let extracted = run(plugins, &targets, &mut sink, &mut outcomes, &mut runs);
     let spool_path = run_dir.path().join("spool.duckdb");
@@ -262,6 +284,17 @@ pub fn run_project(
         let mut spool = Store::open(&spool_path, 1024)?;
         spool.insert_events(&sink.events)?;
         spool.insert_facts(&sink.facts)?;
+        spool.insert_records(&sink.records)?;
+        let mut by_plugin: HashMap<&str, Vec<(SystemId, String)>> = HashMap::new();
+        for (system, note, plugin) in &sink.notes {
+            by_plugin
+                .entry(plugin)
+                .or_default()
+                .push((*system, note.clone()));
+        }
+        for (plugin, notes) in by_plugin {
+            spool.save_system_notes(plugin, &notes)?;
+        }
         for (l, by) in &sink.links {
             spool.add_link(l.id, l.kind.as_str(), &l.from, &l.to, by)?;
         }
@@ -284,7 +317,7 @@ pub fn run_project(
         .zip(notes)
         .flat_map(|(s, n)| n.into_iter().map(|n| (s.id, n)))
         .collect();
-    writer.store.save_system_notes(&notes)?;
+    writer.store.save_system_notes(REGISTRY_NOTES, &notes)?;
     Ok(RunSummary {
         systems: systems.len(),
         extracted: extracted.len(),

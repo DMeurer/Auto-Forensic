@@ -22,7 +22,7 @@
 //! rebuilt every run (F25). A failed extraction isn't logged, so it is tried again.
 
 use crate::artifact::Artifact;
-use crate::bytes::ByteSource;
+use crate::bytes::{ByteSource, Locator};
 use crate::capability::Capabilities;
 use crate::ids::{Endpoint, EventId, FactId, SourceId, SystemId};
 use crate::names::Kind;
@@ -78,6 +78,18 @@ pub struct NewFact {
     pub attrs: Option<String>,
 }
 
+/// A record a plugin produced: one source row, such as an event log record, that its events
+/// point at through [`NewEvent::record`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRecord {
+    pub id: u128,
+    pub source: SourceId,
+    pub kind: Kind,
+    pub locator: Locator,
+    /// The row's content as JSON text.
+    pub attrs: Option<String>,
+}
+
 /// A link a plugin produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewLink {
@@ -103,6 +115,14 @@ pub trait Sink {
     fn link(&mut self, plugin: &Kind, l: NewLink) {
         let kind = l.kind.clone();
         self.emit(plugin, &kind, format!("{l:?}"));
+    }
+    fn record(&mut self, plugin: &Kind, _system: SystemId, r: NewRecord) {
+        let kind = r.kind.clone();
+        self.emit(plugin, &kind, format!("{r:?}"));
+    }
+    /// Something the plugin couldn't read cleanly, such as a damaged file, for `af status`.
+    fn note(&mut self, plugin: &Kind, _system: SystemId, text: String) {
+        self.emit(plugin, plugin, text);
     }
 }
 
