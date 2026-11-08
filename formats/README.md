@@ -11,5 +11,6 @@ One crate per file format, named `af-fmt-<format>`. A format crate takes bytes (
 | `fix: skip subkey list offsets that overflow u32` | `lf`, `li` and `ri` lists added offsets with plain u32 addition; a crafted hive panicked (debug) or wrapped (release). `lh` already used `checked_add` |
 | `fix: treat a negative or overflowing root cell offset as no root key` | `get_root_key` cast a negative i32 offset to usize and overflowed |
 | `fix: search each key cell once per depth when looking up a key path` | A subkey list naming the same key cell many times made a failed lookup read repeats^depth keys: a 42 KB hive took 29 s |
+| `fix: keep all stored bytes of fixed-size values` | A `REG_DWORD` stored in 8 bytes (or a `REG_QWORD` in 16) was cut to its type's size; yarp keeps the stored bytes, and the rest can hold data (R4) |
 
-All three were found by the `regf` fuzz target (`fuzz/`, I25). To fix the next finding locally, add `[patch."https://github.com/DMeurer/notatin"] notatin = { path = "../../notatin" }` to `fuzz/Cargo.toml` while working, and don't commit it.
+The first three were found by the `regf` fuzz target (`fuzz/`, I25), the last by comparing with yarp (R4). To fix the next finding locally, add `[patch."https://github.com/DMeurer/notatin"] notatin = { path = "../../notatin" }` to `fuzz/Cargo.toml` while working, and don't commit it.
