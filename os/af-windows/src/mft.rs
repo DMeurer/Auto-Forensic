@@ -1,8 +1,8 @@
 //! NTFS file times from a loose `$MFT` (piece M2): every file record becomes an `ntfs.mft.record`
 //! record (path, number, sequence, in use, directory, size) with its `$STANDARD_INFORMATION`
 //! times as `ntfs.si.*` events and the times of each of its `$FILE_NAME` attributes as
-//! `ntfs.fn.*` events. An `$MFT` inside an image is read by `fs.timeline` (M3, your choice),
-//! with the same event names.
+//! `ntfs.fn.*` events (created, modified, changed for the MFT entry, accessed). An `$MFT` inside
+//! an image is read by `fs.timeline` (M3, your choice), with the NTFS adapter's names, as here.
 //!
 //! The meanings say which attribute a time is from and nothing more: `ntfs.si.created` is when
 //! the `$SI` says the file was made, which a copy, an extraction or a timestomp can set to
@@ -21,13 +21,13 @@ use std::sync::OnceLock;
 const SI: [&str; 4] = [
     "ntfs.si.created",
     "ntfs.si.modified",
-    "ntfs.si.mft_modified",
+    "ntfs.si.changed",
     "ntfs.si.accessed",
 ];
 const FN: [&str; 4] = [
     "ntfs.fn.created",
     "ntfs.fn.modified",
-    "ntfs.fn.mft_modified",
+    "ntfs.fn.changed",
     "ntfs.fn.accessed",
 ];
 /// `$FILE_NAME` namespace of a DOS 8.3 name that has a long name beside it.
@@ -41,7 +41,8 @@ impl Plugin for Mft {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.mft").expect("valid kind"),
-            version: 1,
+            // 2: `mft_modified` renamed `changed`, as the NTFS adapter names it.
+            version: 2,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: vec![Input {
@@ -256,11 +257,11 @@ mod tests {
                 r#"source.loose:1/ntfs.mft_record:6 {"path":"firefox.exe","number":6,"sequence":1,"in_use":true,"dir":false,"size":null}"#,
                 "ntfs.si.created 2019-04-17 18:40:00.0000000 UTC",
                 "ntfs.si.modified 2019-04-17 18:40:00.0000000 UTC",
-                "ntfs.si.mft_modified 2025-08-18 14:13:20.0000000 UTC",
+                "ntfs.si.changed 2025-08-18 14:13:20.0000000 UTC",
                 "ntfs.si.accessed 2025-08-18 14:13:20.0000000 UTC",
                 "ntfs.fn.created 2025-08-18 14:13:20.0000000 UTC",
                 "ntfs.fn.modified 2025-08-18 14:13:20.0000000 UTC",
-                "ntfs.fn.mft_modified 2025-08-18 14:13:20.0000000 UTC",
+                "ntfs.fn.changed 2025-08-18 14:13:20.0000000 UTC",
                 "ntfs.fn.accessed 2025-08-18 14:13:20.0000000 UTC",
             ]
         );
