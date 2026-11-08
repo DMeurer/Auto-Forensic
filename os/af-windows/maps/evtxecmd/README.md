@@ -1,6 +1,7 @@
 # EvtxECmd's maps
 
-The `.map` files here are the event log maps of EvtxECmd, copied unchanged from
+The `.map` files here are the event log maps of EvtxECmd, copied unchanged (except that Git
+stores 24 of them with LF instead of CRLF line ends) from
 https://github.com/EricZimmerman/evtx, folder `evtx/Maps`, at commit
 `68c4d55f359a6aa0b2f81f022d487b533c1786a5` (2026-11-04), under the MIT licence in `LICENSE`
 (copyright Eric R. Zimmerman). af compiles them in (piece E3, your choice of 2026-11-08) after its
