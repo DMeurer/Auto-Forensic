@@ -19,7 +19,7 @@ pub const REG_DWORD: u32 = 4;
 
 /// The SYSTEM hive (`HKLM\SYSTEM`).
 pub fn system_hive() -> HiveId {
-    HiveId(Kind::new("windows.system").expect("valid kind"))
+    HiveId::machine(Kind::new("windows.system").expect("valid kind"))
 }
 
 /// The neutral hive ID for a Windows root path such as `HKLM\SYSTEM` or
@@ -36,7 +36,7 @@ pub fn hive_for_root(root: &str) -> Option<HiveId> {
         "SECURITY" => "windows.security",
         _ => return None,
     };
-    Some(HiveId(Kind::new(id).expect("valid kind")))
+    Some(HiveId::machine(Kind::new(id).expect("valid kind")))
 }
 
 pub(crate) fn path(text: &str) -> ViewPath {
@@ -89,7 +89,7 @@ pub fn computer_name(reg: &dyn Registry) -> Option<String> {
     reg_sz(&key, "ComputerName")
 }
 
-/// Machine hives by artifact kind, with the hive ID plugins ask for.
+/// Machine hives by artifact kind, with the hive kind plugins ask for.
 const MACHINE_HIVES: [(&str, &str); 6] = [
     ("windows.hive.system", "windows.system"),
     ("windows.hive.software", "windows.software"),
@@ -99,16 +99,24 @@ const MACHINE_HIVES: [(&str, &str); 6] = [
     ("windows.hive.amcache", "windows.amcache"),
 ];
 
-/// A system's machine hives as the registry capability (R1), on `af_fmt_regf::hive`.
+/// Hive kinds per user, with the hive kind plugins ask for (R5); the owner tells users apart.
+const USER_HIVES: [(&str, &str); 2] = [
+    ("windows.hive.ntuser", "windows.ntuser"),
+    ("windows.hive.usrclass", "windows.usrclass"),
+];
+
+/// A system's hives as the registry capability (R1, R5), on `af_fmt_regf::hive`: the machine
+/// hives, and every user's NTUSER.DAT and UsrClass.dat with its owner.
 pub struct HiveRegistry {
     hives: Vec<(HiveId, RefCell<Hive>)>,
 }
 
 impl HiveRegistry {
-    /// The machine hives among a system's artifacts, each with its `.LOG1` and `.LOG2`
-    /// artifacts replayed. A hive that doesn't open is left out; `None` if none opens. The
-    /// notes name every hive, user hives too, that doesn't open or whose logs are missing or
-    /// didn't replay (R3).
+    /// The hives among a system's artifacts, each with its `.LOG1` and `.LOG2` artifacts
+    /// replayed. A user hive's owner is the SID whose ProfileImagePath (in SOFTWARE's
+    /// ProfileList) is the hive's folder, or else `unknown user N`, one N per folder or loose
+    /// hive. A hive that doesn't open is left out; `None` if none opens. The notes name every
+    /// hive that doesn't open or whose logs are missing or didn't replay (R3).
     pub fn from_artifacts(
         artifacts: &[Artifact],
         opener: &dyn Opener,
@@ -119,7 +127,8 @@ impl HiveRegistry {
             src.read_exact_at(0, &mut buf).ok()?;
             Some(buf)
         };
-        let mut hives = Vec::new();
+        let mut reg = Self { hives: Vec::new() };
+        let mut users = Vec::new();
         let mut notes = Vec::new();
         let hive_kinds = artifacts.iter().filter(|a| {
             let k = a.kind.as_str();
@@ -152,15 +161,62 @@ impl HiveRegistry {
                     "hive {path} is dirty and its log replay failed ({e}): read as far as it got"
                 )),
             }
-            // shortcut: user hives are only checked here, not offered, until R5.
-            let machine = MACHINE_HIVES.iter().find(|(k, _)| *k == hive.kind.as_str());
-            if let Some((_, id)) = machine
-                && !hives.iter().any(|(h, _): &(HiveId, _)| h.0.as_str() == *id)
+            let kind = |id: &str| Kind::new(id).expect("valid kind");
+            if let Some((_, id)) = MACHINE_HIVES.iter().find(|(k, _)| *k == hive.kind.as_str()) {
+                if !reg.hives.iter().any(|(h, _)| h.kind.as_str() == *id) {
+                    reg.hives.push((HiveId::machine(kind(id)), RefCell::new(h)));
+                }
+            } else if let Some((_, id)) = USER_HIVES.iter().find(|(k, _)| *k == hive.kind.as_str())
             {
-                hives.push((HiveId(Kind::new(id).expect("valid kind")), RefCell::new(h)));
+                users.push((crate::plugins::home_of(hive), kind(id), h));
             }
         }
-        ((!hives.is_empty()).then_some(Self { hives }), notes)
+        let profiles = reg.profiles();
+        let mut unknown: Vec<Option<String>> = Vec::new();
+        for (home, kind, h) in users {
+            let sid = home.as_deref().and_then(|home| {
+                profiles
+                    .iter()
+                    .find(|(_, p)| crate::plugins::same_home(home, p))
+                    .map(|(sid, _)| sid.clone())
+            });
+            let owner = sid.unwrap_or_else(|| {
+                let lower = home.as_deref().map(str::to_ascii_lowercase);
+                let n = match unknown.iter().position(|u| lower.is_some() && *u == lower) {
+                    Some(n) => n,
+                    None => {
+                        unknown.push(lower);
+                        unknown.len() - 1
+                    }
+                };
+                format!("unknown user {}", n + 1)
+            });
+            reg.hives
+                .push((HiveId::user(kind, &owner), RefCell::new(h)));
+        }
+        ((!reg.hives.is_empty()).then_some(reg), notes)
+    }
+
+    /// SOFTWARE's ProfileList: each SID with its profile folder below the system volume, and
+    /// the `Default` and `Public` template folders as `default profile` and `public profile`.
+    fn profiles(&self) -> Vec<(String, String)> {
+        let software = HiveId::machine(Kind::new("windows.software").expect("valid kind"));
+        let Some(list) = self.key(&software, &path(crate::plugins::PROFILE_LIST)) else {
+            return Vec::new();
+        };
+        let templates = ["Default", "Public"].into_iter().filter_map(|t| {
+            let home = crate::plugins::volume_path(&reg_sz(&list, t)?)?;
+            Some((format!("{} profile", t.to_ascii_lowercase()), home))
+        });
+        list.subkeys
+            .iter()
+            .filter_map(|sid| {
+                let k = self.key(&software, &list.path.join(sid.clone()))?;
+                let home = crate::plugins::volume_path(&reg_sz(&k, "ProfileImagePath")?)?;
+                Some((sid.display(), home))
+            })
+            .chain(templates)
+            .collect()
     }
 }
 
@@ -279,6 +335,187 @@ pub(crate) mod tests {
         }
     }
 
+    /// What a plugin sees of every user hive through the registry capability alone: owner,
+    /// kind and the root key's subkeys. The same code reads loose hives and an image (R5).
+    pub(crate) fn user_roots(reg: &dyn Registry) -> Vec<(String, String, Vec<String>)> {
+        let mut out: Vec<_> = reg
+            .hives()
+            .into_iter()
+            .filter_map(|h| {
+                let root = reg.key(&h, &ViewPath::default())?;
+                Some((
+                    h.owner?,
+                    h.kind.as_str().to_string(),
+                    root.subkeys.iter().map(Name::display).collect(),
+                ))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// R5 on LoneWolf's hives as TSK copied them out of the image (`~/af-stage3/r5`, local only),
+    /// at their image paths: user hives get the SIDs ProfileList names, the template its own
+    /// owner, and the same reader as for loose hives sees their keys.
+    #[test]
+    fn lonewolf_user_hives_get_their_sids() {
+        let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("af-stage3/r5/lonewolf");
+        if !dir.is_dir() {
+            return;
+        }
+        let files = [
+            ("windows.hive.software", "Windows/System32/config/SOFTWARE"),
+            ("windows.hive.log", "Windows/System32/config/SOFTWARE.LOG1"),
+            ("windows.hive.log", "Windows/System32/config/SOFTWARE.LOG2"),
+            ("windows.hive.ntuser", "Users/jcloudy/NTUSER.DAT"),
+            ("windows.hive.log", "Users/jcloudy/ntuser.dat.LOG1"),
+            ("windows.hive.log", "Users/jcloudy/ntuser.dat.LOG2"),
+            (
+                "windows.hive.usrclass",
+                "Users/jcloudy/AppData/Local/Microsoft/Windows/UsrClass.dat",
+            ),
+            ("windows.hive.ntuser", "Users/Default/NTUSER.DAT"),
+            (
+                "windows.hive.ntuser",
+                "Windows/ServiceProfiles/LocalService/NTUSER.DAT",
+            ),
+            (
+                "windows.hive.ntuser",
+                "Windows/ServiceProfiles/NetworkService/NTUSER.DAT",
+            ),
+        ];
+        // Each hive's .LOG1 and .LOG2 next to it, as the profile indexes them.
+        let logs: Vec<(&str, String)> = files[3..]
+            .iter()
+            .filter(|(k, _)| *k != "windows.hive.log")
+            .flat_map(|(_, p)| [1, 2].map(|i| ("windows.hive.log", format!("{p}.LOG{i}"))))
+            .filter(|(_, p)| dir.join(p).is_file())
+            .collect();
+        let files = files.iter().map(|(k, p)| (*k, p.to_string())).chain(logs);
+        let mem = Mem(files
+            .map(|(k, p)| {
+                let a = Artifact {
+                    kind: Kind::new(k).unwrap(),
+                    locator: af_core::bytes::Locator::root("source.image", "lw")
+                        .child("fs.path", &p),
+                    source: af_core::ids::SourceId(1),
+                    system: None,
+                    sha256: String::new(),
+                };
+                (a, std::fs::read(dir.join(&p)).unwrap())
+            })
+            .collect());
+        let artifacts: Vec<Artifact> = mem.0.iter().map(|(a, _)| a.clone()).collect();
+        let (reg, notes) = HiveRegistry::from_artifacts(&artifacts, &mem);
+        assert!(notes.is_empty(), "{notes:?}");
+        let roots = user_roots(&reg.unwrap());
+        let owners: Vec<(&str, &str)> = roots
+            .iter()
+            .map(|(o, k, _)| (o.as_str(), k.as_str()))
+            .collect();
+        let jc = "S-1-5-21-2734969515-1644526556-1039763013-1001";
+        assert_eq!(
+            owners,
+            [
+                ("S-1-5-19", "windows.ntuser"),
+                ("S-1-5-20", "windows.ntuser"),
+                (jc, "windows.ntuser"),
+                (jc, "windows.usrclass"),
+                ("default profile", "windows.ntuser"),
+            ]
+        );
+        let jc_ntuser = &roots
+            .iter()
+            .find(|(o, k, _)| o == jc && k == "windows.ntuser")
+            .unwrap()
+            .2;
+        assert!(jc_ntuser.iter().any(|s| s == "Software"), "{jc_ntuser:?}");
+    }
+
+    struct Mem(Vec<(Artifact, Vec<u8>)>);
+
+    impl Opener for Mem {
+        fn open(&self, a: &Artifact) -> std::io::Result<Box<dyn af_core::bytes::ByteSource>> {
+            let (_, d) = self.0.iter().find(|(x, _)| x == a).expect("known artifact");
+            Ok(Box::new(af_core::bytes::MemSource::new(
+                d.clone(),
+                a.locator.clone(),
+            )))
+        }
+    }
+
+    /// R5: user hives are offered with an owner; without ProfileList (none here) a folder is one
+    /// unknown user, NTUSER.DAT and UsrClass.dat alike, and each loose hive another.
+    #[test]
+    fn user_hives_have_owners() {
+        let hive = |kind: &str, loc: af_core::bytes::Locator, root: &str| {
+            let a = Artifact {
+                kind: Kind::new(kind).unwrap(),
+                locator: loc,
+                source: af_core::ids::SourceId(1),
+                system: None,
+                sha256: String::new(),
+            };
+            (a, af_fmt_regf::build_test_hive(&[root], "lh"))
+        };
+        let img = |p: &str| af_core::bytes::Locator::root("source.image", "x").child("fs.path", p);
+        let loose = |n: &str| af_core::bytes::Locator::root("source.loose", n);
+        let files = Mem(vec![
+            hive(
+                "windows.hive.system",
+                img("Windows/System32/config/SYSTEM"),
+                "Select",
+            ),
+            hive(
+                "windows.hive.ntuser",
+                img("Users/ann/NTUSER.DAT"),
+                "Software",
+            ),
+            hive(
+                "windows.hive.usrclass",
+                img("Users/Ann/AppData/Local/Microsoft/Windows/UsrClass.dat"),
+                "Local Settings",
+            ),
+            hive("windows.hive.ntuser", loose("a"), "AppEvents"),
+            hive("windows.hive.ntuser", loose("b"), "Console"),
+        ]);
+        let artifacts: Vec<Artifact> = files.0.iter().map(|(a, _)| a.clone()).collect();
+        let (reg, notes) = HiveRegistry::from_artifacts(&artifacts, &files);
+        assert!(notes.is_empty(), "{notes:?}");
+        let reg = reg.unwrap();
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            user_roots(&reg),
+            [
+                (
+                    "unknown user 1".into(),
+                    "windows.ntuser".into(),
+                    s(&["Software"])
+                ),
+                (
+                    "unknown user 1".into(),
+                    "windows.usrclass".into(),
+                    s(&["Local Settings"])
+                ),
+                (
+                    "unknown user 2".into(),
+                    "windows.ntuser".into(),
+                    s(&["AppEvents"])
+                ),
+                (
+                    "unknown user 3".into(),
+                    "windows.ntuser".into(),
+                    s(&["Console"])
+                ),
+            ]
+        );
+        assert!(
+            reg.key(&system_hive(), &path("Select")).is_some(),
+            "machine hives stay"
+        );
+    }
+
     /// R2: a hive's logs pair with it in any letter case, and only with it.
     #[test]
     fn logs_pair_ignoring_case() {
@@ -330,7 +567,7 @@ pub(crate) mod tests {
             Some(system_hive())
         );
         assert_eq!(
-            hive_for_root("HKLM\\SOFTWARE").map(|h| h.0.as_str().to_string()),
+            hive_for_root("HKLM\\SOFTWARE").map(|h| h.kind.as_str().to_string()),
             Some("windows.software".to_string())
         );
         assert_eq!(hive_for_root("HKCU\\Software"), None);

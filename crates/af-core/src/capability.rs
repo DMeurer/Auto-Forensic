@@ -14,9 +14,31 @@ use crate::path::{CasePolicy, Name, NameKind, ViewPath};
 use crate::time::Time;
 use std::collections::BTreeMap;
 
-/// A hive, by namespaced ID, such as `windows.system` or `windows.ntuser`.
+/// A hive: its namespaced kind, such as `windows.system` or `windows.ntuser`, and for a user's
+/// hive whose it is (R5, user's choice: kind plus owner).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct HiveId(pub Kind);
+pub struct HiveId {
+    pub kind: Kind,
+    /// The user a per-user hive belongs to: a SID, `unknown user N` when none is known, or for
+    /// a template's hive (Windows' `Default` profile) `default profile`. `None` for a machine
+    /// hive.
+    pub owner: Option<String>,
+}
+
+impl HiveId {
+    /// A machine hive, one per system.
+    pub fn machine(kind: Kind) -> Self {
+        Self { kind, owner: None }
+    }
+
+    /// A user's hive.
+    pub fn user(kind: Kind, owner: &str) -> Self {
+        Self {
+            kind,
+            owner: Some(owner.to_string()),
+        }
+    }
+}
 
 /// One key, read from a registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +101,7 @@ impl FakeRegistry {
         value_type: u32,
         data: &[u8],
     ) -> &mut Self {
-        let hive = HiveId(Kind::new(hive).expect("hive ID is a namespaced name"));
+        let hive = HiveId::machine(Kind::new(hive).expect("hive ID is a namespaced name"));
         let path = Self::path(key);
         self.ensure(&hive, &path);
         let k = self
@@ -156,7 +178,7 @@ mod tests {
         let mut r = FakeRegistry::new();
         r.set("test.hive", "Software\\Vendor\\App", "Version", 1, b"1.0")
             .set("test.hive", "software\\vendor\\APP", "version", 1, b"2.0");
-        let hive = HiveId(Kind::new("test.hive").unwrap());
+        let hive = HiveId::machine(Kind::new("test.hive").unwrap());
         assert_eq!(r.hives(), std::slice::from_ref(&hive));
         let k = r
             .key(&hive, &FakeRegistry::path("SOFTWARE\\Vendor\\app"))
@@ -173,7 +195,7 @@ mod tests {
             r.key(&hive, &FakeRegistry::path("Software\\Other"))
                 .is_none()
         );
-        let other = HiveId(Kind::new("test.other").unwrap());
+        let other = HiveId::machine(Kind::new("test.other").unwrap());
         assert!(r.key(&other, &ViewPath::default()).is_none());
     }
 }

@@ -5,9 +5,11 @@
 //! caller's job, ignoring case (T7: `notatin`'s own CLI misses `system.log1`). Key paths have `\`
 //! between names, start below the root key, and compare without case.
 
+use notatin::cell_key_node::CellKeyNode;
 use notatin::log::LogCode;
 use notatin::parser::Parser;
 use notatin::parser_builder::ParserBuilder;
+use std::collections::HashMap;
 use std::io::Cursor;
 
 /// FILETIME ticks (100 ns since 1601) of the Unix epoch.
@@ -17,6 +19,10 @@ const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 pub struct Hive {
     parser: Parser,
     replay: Replay,
+    /// Each key's subkeys once read, by the key's path in lower case (R5): notatin's own path
+    /// lookup reads every sibling at each level again, which made a walk of a large SOFTWARE
+    /// hive take 10 minutes.
+    children: HashMap<String, Vec<CellKeyNode>>,
 }
 
 /// What became of the transaction logs (R3).
@@ -101,6 +107,7 @@ impl Hive {
             return Ok(Self {
                 parser: parse(vec![])?,
                 replay,
+                children: HashMap::new(),
             });
         }
         let parser = match parse(logs) {
@@ -109,12 +116,14 @@ impl Hive {
                 return Ok(Self {
                     parser: parse(vec![])?,
                     replay: Replay::Failed(e),
+                    children: HashMap::new(),
                 });
             }
         };
         Ok(Self {
             replay: replay_result(&parser),
             parser,
+            children: HashMap::new(),
         })
     }
 
@@ -125,11 +134,11 @@ impl Hive {
 
     /// The key at `path` (`\` between names, below the root; empty for the root).
     pub fn key(&mut self, path: &str) -> Option<Key> {
-        let mut k = self.parser.get_key(path, false).ok()??;
-        let subkeys = k
-            .read_sub_keys(&mut self.parser)
-            .into_iter()
-            .map(|s| s.key_name)
+        let (k, at) = self.node(path)?;
+        let subkeys = self
+            .children(&at, &k)
+            .iter()
+            .map(|s| s.key_name.clone())
             .collect();
         let values = k
             .value_iter()
@@ -148,6 +157,39 @@ impl Hive {
             subkeys,
             values,
         })
+    }
+}
+
+impl Hive {
+    /// The key at `path` from the root, one level at a time through [`Hive::children`], with its
+    /// path in lower case. Only the matching child is followed, so a subkey list that names one
+    /// key many times costs one read of the list.
+    fn node(&mut self, path: &str) -> Option<(CellKeyNode, String)> {
+        let mut cur = self.parser.get_root_key().ok()??;
+        let mut at = String::new();
+        for name in path.split('\\').filter(|n| !n.is_empty()) {
+            let want = name.to_lowercase();
+            let next = self
+                .children(&at, &cur)
+                .iter()
+                .find(|k| k.key_name.to_lowercase() == want)?
+                .clone();
+            if !at.is_empty() {
+                at.push('\\');
+            }
+            at.push_str(&want);
+            cur = next;
+        }
+        Some((cur, at))
+    }
+
+    /// The subkeys of `node`, whose lower-case path is `at`, read once.
+    fn children(&mut self, at: &str, node: &CellKeyNode) -> &[CellKeyNode] {
+        if !self.children.contains_key(at) {
+            let kids = node.clone().read_sub_keys(&mut self.parser);
+            self.children.insert(at.to_string(), kids);
+        }
+        &self.children[at]
     }
 }
 

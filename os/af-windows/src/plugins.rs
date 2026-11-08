@@ -179,11 +179,11 @@ impl Plugin for HiveRootKeys {
 /// is a profile.
 pub struct UserProfiles;
 
-const PROFILE_LIST: &str = "Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
+pub(crate) const PROFILE_LIST: &str = "Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
 const USRCLASS: &str = "/AppData/Local/Microsoft/Windows/UsrClass.dat";
 
 /// The profile folder a user hive sits in, from its path below the volume. A loose hive has none.
-fn home_of(a: &Artifact) -> Option<String> {
+pub(crate) fn home_of(a: &Artifact) -> Option<String> {
     let p = &a.locator.steps().last()?.id;
     match a.kind.as_str() {
         "windows.hive.ntuser" => p.rsplit_once('/').map(|(home, _)| home.to_string()),
@@ -198,7 +198,7 @@ fn home_of(a: &Artifact) -> Option<String> {
 
 /// A ProfileImagePath (`C:\Users\x`, `%SystemDrive%\Users\x`, `%systemroot%\...`) as a path
 /// below the system volume, `/` between names.
-fn volume_path(p: &str) -> Option<String> {
+pub(crate) fn volume_path(p: &str) -> Option<String> {
     let p = p.replace('\\', "/");
     let lower = p.to_ascii_lowercase();
     if lower.starts_with("%systemdrive%/") {
@@ -212,7 +212,7 @@ fn volume_path(p: &str) -> Option<String> {
 }
 
 /// Whether a hive's folder is this profile folder; a KAPE drive folder (`C/`) may come first.
-fn same_home(hive_home: &str, home: &str) -> bool {
+pub(crate) fn same_home(hive_home: &str, home: &str) -> bool {
     let (h, p) = (hive_home.to_ascii_lowercase(), home.to_ascii_lowercase());
     !p.is_empty() && (h == p || h.ends_with(&format!("/{p}")))
 }
@@ -274,7 +274,8 @@ impl Plugin for UserProfiles {
             .artifacts
             .iter()
             .find(|a| a.kind.as_str() == "windows.hive.software");
-        let hive_id = af_core::capability::HiveId(Kind::new("windows.software").expect("valid"));
+        let hive_id =
+            af_core::capability::HiveId::machine(Kind::new("windows.software").expect("valid"));
         let mut profiles: Vec<Profile> = Vec::new();
         let mut templates: Vec<String> = Vec::new();
         if let (Some(reg), Some(_)) = (ctx.caps.registry, software)
