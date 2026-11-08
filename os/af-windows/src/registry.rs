@@ -99,6 +99,45 @@ const MACHINE_HIVES: [(&str, &str); 6] = [
     ("windows.hive.amcache", "windows.amcache"),
 ];
 
+/// The time zone Windows was set to, from `Control\TimeZoneInformation` in the current control
+/// set (R6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeZone {
+    /// `TimeZoneKeyName` (Windows 7 on), else `StandardName`, such as `Eastern Standard Time`.
+    pub name: Option<String>,
+    /// `Bias`: minutes to add to local standard time to get UTC (300 for UTC-05:00).
+    pub bias: Option<i32>,
+}
+
+impl TimeZone {
+    /// The standard offset from UTC as `UTC-05:00`.
+    pub fn offset(&self) -> Option<String> {
+        let off = -self.bias?;
+        let sign = if off < 0 { '-' } else { '+' };
+        Some(format!(
+            "UTC{sign}{:02}:{:02}",
+            off.abs() / 60,
+            off.abs() % 60
+        ))
+    }
+}
+
+/// The time zone from the SYSTEM hive; `None` without SYSTEM or the key.
+pub fn time_zone(reg: &dyn Registry) -> Option<TimeZone> {
+    let set = current_control_set(reg)?;
+    let key = reg.key(
+        &system_hive(),
+        &path(&format!("{set}\\Control\\TimeZoneInformation")),
+    )?;
+    let name = reg_sz(&key, "TimeZoneKeyName")
+        .filter(|n| !n.is_empty())
+        .or_else(|| reg_sz(&key, "StandardName"));
+    Some(TimeZone {
+        name,
+        bias: reg_dword(&key, "Bias").map(|b| b as i32),
+    })
+}
+
 /// Hive kinds per user, with the hive kind plugins ask for (R5); the owner tells users apart.
 const USER_HIVES: [(&str, &str); 2] = [
     ("windows.hive.ntuser", "windows.ntuser"),
@@ -306,6 +345,34 @@ pub(crate) mod tests {
         let r = system_with_name("DESKTOP-ICH");
         assert_eq!(current_control_set(&r).as_deref(), Some("ControlSet002"));
         assert_eq!(computer_name(&r).as_deref(), Some("DESKTOP-ICH"));
+    }
+
+    #[test]
+    fn time_zone_from_the_current_control_set() {
+        let mut r = system_with_name("PC");
+        r.set(
+            "windows.system",
+            "ControlSet002\\Control\\TimeZoneInformation",
+            "TimeZoneKeyName",
+            REG_SZ,
+            &utf16z("Eastern Standard Time"),
+        )
+        .set(
+            "windows.system",
+            "ControlSet002\\Control\\TimeZoneInformation",
+            "Bias",
+            REG_DWORD,
+            &300u32.to_le_bytes(),
+        );
+        let tz = time_zone(&r).unwrap();
+        assert_eq!(tz.name.as_deref(), Some("Eastern Standard Time"));
+        assert_eq!(tz.offset().as_deref(), Some("UTC-05:00"));
+        let east = TimeZone {
+            name: None,
+            bias: Some(-330),
+        };
+        assert_eq!(east.offset().as_deref(), Some("UTC+05:30"));
+        assert_eq!(time_zone(&FakeRegistry::new()), None);
     }
 
     #[test]

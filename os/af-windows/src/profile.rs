@@ -11,7 +11,7 @@
 //! - **Identity:** the computer name from the SYSTEM hive, through the registry capability
 //!   (F11). Without a registry, or without the value, it says so.
 
-use crate::registry::computer_name;
+use crate::registry::{computer_name, current_control_set, time_zone};
 use af_core::capability::Capabilities;
 use af_core::names::Kind;
 use af_core::path::ViewPath;
@@ -194,27 +194,42 @@ impl OsProfile for WindowsProfile {
         _volumes: &[&dyn VolumeProbe],
         caps: &Capabilities<'_>,
     ) -> Identity {
+        let fact = |k: &str, v: String| (Kind::new(k).expect("valid kind"), v);
+        // R6: the zone says so when it can't be known, so a local time is never read as UTC.
+        let unknown_zone = |why: &str| fact("windows.time_zone", format!("unknown ({why})"));
         let Some(reg) = caps.registry else {
             return Identity {
+                facts: vec![unknown_zone("no SYSTEM hive")],
                 note: Some("no registry: the computer name is in the SYSTEM hive".into()),
                 ..Identity::default()
             };
         };
-        match computer_name(reg) {
-            Some(name) => Identity {
-                label: Some(name.clone()),
-                facts: vec![(
-                    Kind::new("windows.computer_name").expect("valid kind"),
-                    name,
-                )],
-                note: None,
-            },
-            None => Identity {
-                note: Some(
-                    "the SYSTEM hive has no computer name in its current control set".into(),
-                ),
-                ..Identity::default()
-            },
+        let mut facts = vec![];
+        let name = computer_name(reg);
+        if let Some(n) = &name {
+            facts.push(fact("windows.computer_name", n.clone()));
+        }
+        match current_control_set(reg) {
+            Some(set) => facts.push(fact("windows.control_set", set)),
+            None => facts.push(unknown_zone("no SYSTEM hive")),
+        }
+        if let Some(tz) = time_zone(reg) {
+            facts.push(fact(
+                "windows.time_zone",
+                tz.name.clone().unwrap_or_else(|| "unnamed".into()),
+            ));
+            if let Some(off) = tz.offset() {
+                facts.push(fact("windows.time_zone_offset", off));
+            }
+        } else if current_control_set(reg).is_some() {
+            facts.push(unknown_zone("SYSTEM has no TimeZoneInformation"));
+        }
+        Identity {
+            note: name
+                .is_none()
+                .then(|| "the SYSTEM hive has no computer name in its current control set".into()),
+            label: name,
+            facts,
         }
     }
 }
