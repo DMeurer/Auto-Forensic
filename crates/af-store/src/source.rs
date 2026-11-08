@@ -200,6 +200,12 @@ impl Project {
                 "INSERT INTO volumes VALUES (?, ?, ?, ?, ?, ?)",
                 duckdb::params![id.0, v.id, v.start, v.len, v.description, v.content],
             )?;
+            if let Some(read) = &v.read {
+                tx.execute(
+                    "INSERT INTO volume_reads VALUES (?, ?, ?)",
+                    duckdb::params![id.0, v.id, read.as_ref().err()],
+                )?;
+            }
         }
         for n in &notes {
             tx.execute(
@@ -222,7 +228,9 @@ impl Project {
     /// The volumes found when the source was added, by start, and the notes on its tables.
     pub fn volumes(&self, id: SourceId) -> Result<(Vec<VolumeRow>, Vec<String>), ProjectError> {
         let mut stmt = self.store.conn.prepare(
-            "SELECT id, start, len, description, content FROM volumes WHERE source = ? ORDER BY start, id",
+            "SELECT v.id, v.start, v.len, v.description, v.content, r.id IS NOT NULL, r.error \
+             FROM volumes v LEFT JOIN volume_reads r ON r.source = v.source AND r.id = v.id \
+             WHERE v.source = ? ORDER BY v.start, v.id",
         )?;
         let rows = stmt
             .query_map([id.0], |r| {
@@ -232,6 +240,11 @@ impl Project {
                     len: r.get(2)?,
                     description: r.get(3)?,
                     content: r.get(4)?,
+                    read: match (r.get::<_, bool>(5)?, r.get::<_, Option<String>>(6)?) {
+                        (false, _) => None,
+                        (true, None) => Some(Ok(())),
+                        (true, Some(e)) => Some(Err(e)),
+                    },
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -384,6 +397,7 @@ impl Project {
             "source_files",
             "image_checks",
             "volumes",
+            "volume_reads",
             "volume_notes",
         ] {
             tx.execute(&format!("DELETE FROM {table} WHERE source = ?"), [id.0])?;
@@ -506,6 +520,9 @@ pub struct VolumeRow {
     pub len: u64,
     pub description: String,
     pub content: String,
+    /// `None` when af has no reader for the content (or the source predates coverage), else
+    /// whether the reader opened it, as found when the source was added.
+    pub read: Option<Result<(), String>>,
 }
 
 impl VolumeRow {
@@ -514,6 +531,27 @@ impl VolumeRow {
             "volume {}: {} at byte {}, {} bytes ({})",
             self.id, self.content, self.start, self.len, self.description
         )
+    }
+
+    /// What af read of the volume and what it didn't (piece I26). Never claims more than was read.
+    pub fn coverage(&self) -> String {
+        let c = self.content.as_str();
+        match &self.read {
+            Some(Ok(())) => format!(
+                "read with the {c} reader; unallocated space, file slack, index slack and volume shadow copies aren't searched"
+            ),
+            Some(Err(e)) => format!("not read: the {c} reader failed: {e}"),
+            None if c == "ntfs" => {
+                "not checked: added by an af that didn't record coverage; add the source again"
+                    .into()
+            }
+            None if c.ends_with("(locked)") => format!("not read: {c}, af can't decrypt it yet"),
+            None if c == "unknown" && self.id.starts_with("gap") => {
+                "not read: space outside the partitions isn't searched".into()
+            }
+            None if c == "unknown" => "not read: content not recognised".into(),
+            None => format!("not read: af has no {c} reader yet"),
+        }
     }
 }
 
@@ -531,6 +569,7 @@ fn list_volumes(files: &[PathBuf]) -> (Vec<VolumeRow>, Vec<String>) {
                     len: v.len,
                     description: v.description.clone(),
                     content: v.content.name().into(),
+                    read: crate::run::open_fs(v).map(|r| r.map(|_| ()).map_err(|e| e.to_string())),
                 })
                 .collect(),
             l.notes,
@@ -732,6 +771,124 @@ mod tests {
 
     /// I6 on a real E01, where the dfVFS samples are fetched: stored and recomputed MD5 agree.
     #[test]
+    fn coverage_without_a_recorded_read() {
+        let row = |content: &str| VolumeRow {
+            id: "1".into(),
+            start: 0,
+            len: 512,
+            description: String::new(),
+            content: content.into(),
+            read: None,
+        };
+        assert_eq!(
+            row("ntfs").coverage(),
+            "not checked: added by an af that didn't record coverage; add the source again"
+        );
+        assert_eq!(
+            row("luks (locked)").coverage(),
+            "not read: luks (locked), af can't decrypt it yet"
+        );
+        assert_eq!(row("ext").coverage(), "not read: af has no ext reader yet");
+        let failed = VolumeRow {
+            read: Some(Err("bad MFT".into())),
+            ..row("ntfs")
+        };
+        assert_eq!(
+            failed.coverage(),
+            "not read: the ntfs reader failed: bad MFT"
+        );
+    }
+
+    #[test]
+    fn a_bitlocker_image_is_reported_as_not_read() {
+        let bde = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("af-stage3/evidence/dfvfs/bdetogo.raw");
+        if !bde.is_file() {
+            return;
+        }
+        let root = scratch("bde");
+        let mut p = Project::create(&root.join("case"), "t").unwrap();
+        let s = p.add_source(&bde).unwrap();
+        let (v, _) = p.volumes(s.id).unwrap();
+        let got: Vec<(&str, String)> = v.iter().map(|v| (v.id.as_str(), v.coverage())).collect();
+        assert_eq!(
+            got,
+            [(
+                "whole",
+                "not read: bitlocker (locked), af can't decrypt it yet".to_string()
+            )]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// I26 on a mixed disk built from the dfVFS samples: an NTFS that reads, a gap, a FAT12, a
+    /// BitLocker To Go volume, and an NTFS whose boot sector is all that's left.
+    #[test]
+    fn coverage_says_what_was_read_on_a_mixed_disk() {
+        let dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("af-stage3/evidence/dfvfs");
+        let read = |n: &str| std::fs::read(dir.join(n)).ok();
+        let (Some(ntfs), Some(fat), Some(bde)) =
+            (read("ntfs.raw"), read("fat12.raw"), read("bdetogo.raw"))
+        else {
+            return;
+        };
+        let mut broken = ntfs[..512].to_vec();
+        broken.resize(ntfs.len(), 0);
+        let parts: [(u8, u64, &[u8]); 4] = [
+            (0x07, 2048, &ntfs),
+            (0x01, 12288, &fat),
+            (0x07, 20480, &bde),
+            (0x07, 151552, &broken),
+        ];
+        let end = parts
+            .iter()
+            .map(|(_, at, d)| at * 512 + d.len() as u64)
+            .max()
+            .unwrap();
+        let mut disk = vec![0u8; end as usize];
+        for (i, (kind, at, data)) in parts.iter().enumerate() {
+            let e = 446 + 16 * i;
+            disk[e + 4] = *kind;
+            disk[e + 8..e + 12].copy_from_slice(&(*at as u32).to_le_bytes());
+            disk[e + 12..e + 16].copy_from_slice(&((data.len() / 512) as u32).to_le_bytes());
+            let at = *at as usize * 512;
+            disk[at..at + data.len()].copy_from_slice(data);
+        }
+        disk[510..512].copy_from_slice(&[0x55, 0xaa]);
+        let root = scratch("mixed");
+        let image = root.join("mixed.raw");
+        std::fs::write(&image, &disk).unwrap();
+        let mut p = Project::create(&root.join("case"), "t").unwrap();
+        let s = p.add_source(&image).unwrap();
+        let (v, _) = p.volumes(s.id).unwrap();
+        let got: Vec<(&str, String)> = v.iter().map(|v| (v.id.as_str(), v.coverage())).collect();
+        let reader_failed = v.iter().find(|v| v.id == "4").unwrap().read.clone();
+        assert!(matches!(reader_failed, Some(Err(_))), "{got:?}");
+        let outside = "not read: space outside the partitions isn't searched";
+        assert_eq!(
+            got,
+            [
+                ("gap1", outside.to_string()),
+                (
+                    "1",
+                    "read with the ntfs reader; unallocated space, file slack, index slack and volume shadow copies aren't searched".into()
+                ),
+                ("gap2", outside.into()),
+                ("2", "not read: af has no fat12 reader yet".into()),
+                ("3", "not read: bitlocker (locked), af can't decrypt it yet".into()),
+                ("4", format!("not read: the ntfs reader failed: {}", reader_failed.unwrap().unwrap_err())),
+            ]
+        );
+        let status = p.status(&[]).unwrap();
+        assert!(
+            status.contains("      not read: af has no fat12 reader yet\n"),
+            "{status}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn an_added_e01_is_verified() {
         let e01 = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
             .join("af-stage3/evidence/dfvfs/ext2.E01");
@@ -768,9 +925,15 @@ mod tests {
         assert_eq!(v[1].description, "mbr 0x0c FAT32");
         assert!(notes.is_empty(), "{notes:?}");
         assert!(
-            p.status()
+            p.status(&[])
                 .unwrap()
                 .contains("volume 1: unknown at byte 512, 20480 bytes")
+        );
+        assert_eq!(v[1].read, None);
+        assert_eq!(v[1].coverage(), "not read: content not recognised");
+        assert_eq!(
+            v[2].coverage(),
+            "not read: space outside the partitions isn't searched"
         );
         p.remove_source(s.id).unwrap();
         assert_eq!(p.volumes(s.id).unwrap(), (vec![], vec![]));

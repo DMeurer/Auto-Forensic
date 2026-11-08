@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS volumes (
     description VARCHAR NOT NULL,
     content VARCHAR NOT NULL
 );
+CREATE TABLE IF NOT EXISTS volume_reads (
+    source UHUGEINT NOT NULL,
+    id VARCHAR NOT NULL,
+    error VARCHAR
+);
 CREATE TABLE IF NOT EXISTS volume_notes (
     source UHUGEINT NOT NULL,
     note VARCHAR NOT NULL

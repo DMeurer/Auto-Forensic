@@ -9,6 +9,7 @@ use crate::{Error, Store};
 use af_core::ids::SystemId;
 use af_core::names::Kind;
 use af_core::plugin::{Outcome, OutcomeColumns, OutcomeLog, OutcomeRecord};
+use af_core::runner::Plugin;
 use duckdb::params;
 use std::fmt::Write;
 
@@ -69,8 +70,9 @@ impl Store {
 }
 
 impl Project {
-    /// The status report as text.
-    pub fn status(&self) -> Result<String, ProjectError> {
+    /// The status report as text. `plugins` are the compiled-in ones: an artifact kind none of
+    /// them takes as input is marked as not read.
+    pub fn status(&self, plugins: &[&dyn Plugin]) -> Result<String, ProjectError> {
         let mut out = String::new();
         let info = self.info()?;
         let sources = self.sources()?;
@@ -93,6 +95,7 @@ impl Project {
             let (volumes, notes) = self.volumes(s.id)?;
             for v in &volumes {
                 let _ = writeln!(out, "    {}", v.display());
+                let _ = writeln!(out, "      {}", v.coverage());
             }
             for n in &notes {
                 let _ = writeln!(out, "    note: {n}");
@@ -101,7 +104,15 @@ impl Project {
         let kinds = index.kinds();
         let _ = writeln!(out, "artifacts: {} kind(s)", kinds.len());
         for k in &kinds {
-            let _ = writeln!(out, "  {k}: {}", index.find(k).len());
+            let read = plugins
+                .iter()
+                .any(|p| p.manifest().inputs.iter().any(|i| &i.kind == k));
+            let note = if read {
+                ""
+            } else {
+                " (no plugin reads this kind yet)"
+            };
+            let _ = writeln!(out, "  {k}: {}{note}", index.find(k).len());
         }
         let _ = writeln!(out, "systems: {}", systems.len());
         for sys in &systems {
@@ -170,7 +181,7 @@ mod tests {
         p.store.save_outcomes(&log).unwrap();
         assert_eq!(p.store.outcomes().unwrap().all().len(), 4);
 
-        let report = p.status().unwrap();
+        let report = p.status(&[]).unwrap();
         assert!(
             report.contains("windows.registry.usb v1: present, nothing relevant"),
             "{report}"
@@ -185,6 +196,59 @@ mod tests {
         );
         assert!(
             report.contains("windows.bitlocker v1: there, but encrypted or locked"),
+            "{report}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    struct Reads(af_core::plugin::Manifest);
+    impl Plugin for Reads {
+        fn manifest(&self) -> &af_core::plugin::Manifest {
+            &self.0
+        }
+    }
+
+    #[test]
+    fn kinds_no_plugin_reads_are_marked() {
+        let dir = std::env::temp_dir().join(format!(
+            "af-status-kinds-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut p = Project::create(&dir.join("case"), "Exam").unwrap();
+        let mut index = p.store.artifacts().unwrap();
+        for (kind, path) in [
+            ("windows.hive.system", "SYSTEM"),
+            ("windows.prefetch", "A.pf"),
+        ] {
+            index.add(af_core::artifact::Artifact {
+                kind: Kind::new(kind).unwrap(),
+                locator: af_core::bytes::Locator::root("source.folder", "1").child("fs.path", path),
+                source: af_core::ids::SourceId(1),
+                system: None,
+                sha256: "0".repeat(64),
+            });
+        }
+        p.store.save_artifacts(&index).unwrap();
+        let plugin = Reads(af_core::plugin::Manifest {
+            id: Kind::new("test.hive").unwrap(),
+            version: 1,
+            applies_to: vec![],
+            phases: vec![],
+            inputs: vec![af_core::plugin::Input {
+                kind: Kind::new("windows.hive.system").unwrap(),
+                required: true,
+            }],
+            needs: vec![],
+            produces: vec![],
+        });
+        let report = p.status(&[&plugin]).unwrap();
+        assert!(report.contains("  windows.hive.system: 1\n"), "{report}");
+        assert!(
+            report.contains("  windows.prefetch: 1 (no plugin reads this kind yet)\n"),
             "{report}"
         );
         std::fs::remove_dir_all(dir).unwrap();

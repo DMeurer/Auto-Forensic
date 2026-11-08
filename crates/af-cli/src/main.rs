@@ -251,7 +251,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             write!(
                 out,
                 "{}",
-                Project::open_read_only(&project, wait())?.status()?
+                Project::open_read_only(&project, wait())?.status(PLUGINS)?
             )?;
         }
         Command::System(SystemCommand::List { project }) => {
@@ -297,6 +297,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let (volumes, notes) = p.volumes(s.id)?;
                 for v in &volumes {
                     writeln!(out, "{}", v.display())?;
+                    writeln!(out, "  {}", v.coverage())?;
                 }
                 for n in &notes {
                     writeln!(out, "note: {n}")?;

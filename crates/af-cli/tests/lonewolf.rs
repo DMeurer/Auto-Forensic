@@ -139,4 +139,21 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         !users.contains("Users/Default"),
         "the template isn't a user: {users}"
     );
+
+    // I26: the kinds no plugin reads yet are marked, the hives aren't.
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
+        .arg("status")
+        .arg(case.path())
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&o.stdout);
+    for line in [
+        "  windows.evtx: 146 (no plugin reads this kind yet)",
+        "  windows.prefetch: 161 (no plugin reads this kind yet)",
+        "  windows.hive.log: 22 (no plugin reads this kind yet)",
+        "  windows.hive.system: 1",
+        "  windows.hive.ntuser: 4",
+    ] {
+        assert!(status.lines().any(|l| l == line), "{line} in {status}");
+    }
 }

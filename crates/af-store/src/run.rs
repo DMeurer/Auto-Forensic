@@ -303,14 +303,19 @@ pub(crate) fn file_systems(s: &SourceInfo) -> io::Result<FileSystems> {
             Ok(af_host::volumes::list(img)?
                 .volumes
                 .into_iter()
-                .filter(|v| v.content.name() == "ntfs")
-                .filter_map(|v| {
-                    let fs: Box<dyn FileSystem> = Box::new(Ntfs::open(v.view.clone()).ok()?);
-                    Some((v.view.locator().clone(), fs))
-                })
+                .filter_map(|v| Some((v.view.locator().clone(), open_fs(&v)?.ok()?)))
                 .collect())
         }
         _ => Ok(vec![]),
+    }
+}
+
+/// The file system on a volume: `None` when this build has no reader for its content, else
+/// whether the reader opened it. `af status` reports the same answer as coverage.
+pub(crate) fn open_fs(v: &af_host::volumes::Volume) -> Option<io::Result<Box<dyn FileSystem>>> {
+    match v.content.name() {
+        "ntfs" => Some(Ntfs::open(v.view.clone()).map(|fs| Box::new(fs) as Box<dyn FileSystem>)),
+        _ => None,
     }
 }
 
@@ -428,7 +433,7 @@ mod tests {
                 .all(|e| e.created_by == "test.counter" && e.system == sys.0)
         );
         assert!(
-            p.status()
+            p.status(&[&plugin])
                 .unwrap()
                 .contains("test.counter v1: read, 2 items")
         );
@@ -448,7 +453,7 @@ mod tests {
             "events kept, not duplicated"
         );
         assert!(
-            p.status()
+            p.status(&[&plugin])
                 .unwrap()
                 .contains("test.counter v1: read, 2 items")
         );
