@@ -149,6 +149,15 @@ fn renamed_hives_are_identified() {
         status.contains("windows.hive.root_keys v1: read, 11 items"),
         "{status}"
     );
+    // R7: one key time per key, loose hives alike (SYSTEM: root and 4, SOFTWARE: root and 5).
+    assert!(
+        status.contains("windows.registry.key_times v1: read, 5 items"),
+        "{status}"
+    );
+    assert!(
+        status.contains("windows.registry.key_times v1: read, 6 items"),
+        "{status}"
+    );
     // A second run extracts nothing.
     let (_, out, _) = af(&["run", c]);
     assert!(out.contains(": 0 extracted, 0 events loaded"), "{out}");

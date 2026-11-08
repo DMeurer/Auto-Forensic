@@ -148,6 +148,8 @@ const USER_HIVES: [(&str, &str); 2] = [
 /// hives, and every user's NTUSER.DAT and UsrClass.dat with its owner.
 pub struct HiveRegistry {
     hives: Vec<(HiveId, RefCell<Hive>)>,
+    /// The file each hive came from.
+    origins: std::collections::HashMap<HiveId, (af_core::ids::SourceId, af_core::bytes::Locator)>,
 }
 
 impl HiveRegistry {
@@ -166,7 +168,10 @@ impl HiveRegistry {
             src.read_exact_at(0, &mut buf).ok()?;
             Some(buf)
         };
-        let mut reg = Self { hives: Vec::new() };
+        let mut reg = Self {
+            hives: Vec::new(),
+            origins: std::collections::HashMap::new(),
+        };
         let mut users = Vec::new();
         let mut notes = Vec::new();
         let hive_kinds = artifacts.iter().filter(|a| {
@@ -203,16 +208,19 @@ impl HiveRegistry {
             let kind = |id: &str| Kind::new(id).expect("valid kind");
             if let Some((_, id)) = MACHINE_HIVES.iter().find(|(k, _)| *k == hive.kind.as_str()) {
                 if !reg.hives.iter().any(|(h, _)| h.kind.as_str() == *id) {
-                    reg.hives.push((HiveId::machine(kind(id)), RefCell::new(h)));
+                    let id = HiveId::machine(kind(id));
+                    reg.origins
+                        .insert(id.clone(), (hive.source, hive.locator.clone()));
+                    reg.hives.push((id, RefCell::new(h)));
                 }
             } else if let Some((_, id)) = USER_HIVES.iter().find(|(k, _)| *k == hive.kind.as_str())
             {
-                users.push((crate::plugins::home_of(hive), kind(id), h));
+                users.push((crate::plugins::home_of(hive), kind(id), h, hive));
             }
         }
         let profiles = reg.profiles();
         let mut unknown: Vec<Option<String>> = Vec::new();
-        for (home, kind, h) in users {
+        for (home, kind, h, hive) in users {
             let sid = home.as_deref().and_then(|home| {
                 profiles
                     .iter()
@@ -230,8 +238,10 @@ impl HiveRegistry {
                 };
                 format!("unknown user {}", n + 1)
             });
-            reg.hives
-                .push((HiveId::user(kind, &owner), RefCell::new(h)));
+            let id = HiveId::user(kind, &owner);
+            reg.origins
+                .insert(id.clone(), (hive.source, hive.locator.clone()));
+            reg.hives.push((id, RefCell::new(h)));
         }
         ((!reg.hives.is_empty()).then_some(reg), notes)
     }
@@ -281,23 +291,37 @@ impl Registry for HiveRegistry {
         let (_, h) = self.hives.iter().find(|(id, _)| id == hive)?;
         let text: Vec<String> = path.names().iter().map(Name::display).collect();
         let k = h.borrow_mut().key(&text.join("\\"))?;
-        let name = |s: &str| Name::from_text(s, NameKind::Utf16);
-        Some(RegKey {
-            path: path.clone(),
-            last_written: u64::try_from(k.last_written)
-                .ok()
-                .map(Time::from_ticks_1601),
-            subkeys: k.subkeys.iter().map(|s| name(s)).collect(),
-            values: k
-                .values
-                .into_iter()
-                .map(|v| RegValue {
-                    name: name(&v.name),
-                    value_type: v.value_type,
-                    data: v.data,
-                })
-                .collect(),
-        })
+        Some(reg_key(path.clone(), k))
+    }
+
+    fn walk(&self, hive: &HiveId, visit: &mut dyn FnMut(&RegKey)) {
+        let Some((_, h)) = self.hives.iter().find(|(id, _)| id == hive) else {
+            return;
+        };
+        h.borrow_mut()
+            .walk(|p, k| visit(&reg_key(path(p), k.clone())));
+    }
+
+    fn origin(&self, hive: &HiveId) -> Option<(af_core::ids::SourceId, af_core::bytes::Locator)> {
+        self.origins.get(hive).cloned()
+    }
+}
+
+fn reg_key(path: ViewPath, k: af_fmt_regf::hive::Key) -> RegKey {
+    let name = |s: &str| Name::from_text(s, NameKind::Utf16);
+    RegKey {
+        path,
+        last_written: Some(Time::from_ticks_1601(k.last_written)),
+        subkeys: k.subkeys.iter().map(|s| name(s)).collect(),
+        values: k
+            .values
+            .into_iter()
+            .map(|v| RegValue {
+                name: name(&v.name),
+                value_type: v.value_type,
+                data: v.data,
+            })
+            .collect(),
     }
 }
 

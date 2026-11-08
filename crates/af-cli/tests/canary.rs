@@ -126,9 +126,10 @@ fn linux_canary() {
         per_system[0][1], "BigInt(2)",
         "linux: two login records, {per_system:?}"
     );
+    // Two hive root times, and since R7 one last-written event per key: 3 in SYSTEM, 4 in NTUSER.
     assert_eq!(
-        per_system[1][1], "BigInt(2)",
-        "windows: two hive times, {per_system:?}"
+        per_system[1][1], "BigInt(9)",
+        "windows: two hive times and seven key times, {per_system:?}"
     );
 
     // 3. Foo and foo: two files on the Linux root (on a Linux host), one name on Windows.
@@ -217,10 +218,11 @@ fn linux_canary() {
     );
     assert_eq!(joined[0][0], "BigInt(0)");
 
-    // 6. One timeline across both systems, sorted by ts, raw values as stored in the evidence.
+    // 6. One timeline across both systems, sorted by ts, raw values as stored in the evidence
+    // (the root key times; R7's per-key times, counted above, repeat them).
     let timeline = q(
         "SELECT s.family, e.raw_encoding, e.raw_i64 FROM events e JOIN systems s ON s.id = e.system \
-         ORDER BY e.ts NULLS LAST, e.id",
+         WHERE e.created_by <> 'windows.registry.key_times' ORDER BY e.ts NULLS LAST, e.id",
     );
     let fams: Vec<&str> = timeline
         .iter()

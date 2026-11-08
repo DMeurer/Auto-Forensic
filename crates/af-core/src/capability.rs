@@ -9,6 +9,8 @@
 //! [`FakeRegistry`] is an in-memory registry for tests and fixtures. The real one is Windows's
 //! `HiveRegistry`, on `notatin` (R1), which a system's profile offers to plugins during a run.
 
+use crate::bytes::Locator;
+use crate::ids::SourceId;
 use crate::names::Kind;
 use crate::path::{CasePolicy, Name, NameKind, ViewPath};
 use crate::time::Time;
@@ -73,6 +75,25 @@ pub trait Registry {
     fn hives(&self) -> Vec<HiveId>;
     /// A key by path within a hive, ignoring case. `None` if it doesn't exist.
     fn key(&self, hive: &HiveId, path: &ViewPath) -> Option<RegKey>;
+
+    /// Every key of a hive, depth first from the root (R7). The default walks with
+    /// [`Registry::key`]; a registry on hive files reads each key once instead.
+    fn walk(&self, hive: &HiveId, visit: &mut dyn FnMut(&RegKey)) {
+        let mut todo = vec![ViewPath::default()];
+        while let Some(path) = todo.pop() {
+            let Some(k) = self.key(hive, &path) else {
+                continue;
+            };
+            todo.extend(k.subkeys.iter().rev().map(|s| path.join(s.clone())));
+            visit(&k);
+        }
+    }
+
+    /// The source and locator of the file a hive was read from, so what a plugin makes of
+    /// its keys can point back to it. `None` for a registry without files.
+    fn origin(&self, _hive: &HiveId) -> Option<(SourceId, Locator)> {
+        None
+    }
 }
 
 /// The capabilities available to a profile or plugin for one system.
@@ -197,5 +218,8 @@ mod tests {
         );
         let other = HiveId::machine(Kind::new("test.other").unwrap());
         assert!(r.key(&other, &ViewPath::default()).is_none());
+        let mut walked = vec![];
+        r.walk(&hive, &mut |k| walked.push(k.path.names().len()));
+        assert_eq!(walked, [0, 1, 2, 3], "root, Software, Vendor, App");
     }
 }

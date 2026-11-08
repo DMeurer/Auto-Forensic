@@ -20,6 +20,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::plugins::HiveRootKeys,
     &af_windows::plugins::UserProfiles,
     &af_windows::evtx::EventLogs,
+    &af_windows::registry_timeline::KeyTimes,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

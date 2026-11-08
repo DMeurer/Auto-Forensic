@@ -107,6 +107,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::plugins::HiveRootKeys,
             &af_windows::plugins::UserProfiles,
             &af_windows::evtx::EventLogs,
+            &af_windows::registry_timeline::KeyTimes,
         ],
         &profiles,
     )
@@ -162,7 +163,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         "  windows.evtx: 146",
         "    windows.evtx.events v1: read, 55638 items",
         "  windows.prefetch: 161 (no plugin reads this kind yet)",
-        "  windows.hive.log: 22 (no plugin reads this kind yet)",
+        "  windows.hive.log: 22",
         "  windows.hive.system: 1",
         "  windows.hive.ntuser: 4",
     ] {
@@ -215,4 +216,40 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     ] {
         assert!(systems.lines().any(|l| l == fact), "{fact} in {systems}");
     }
+
+    // R7: one last-written event per key, as many per hive as yarp counts keys in TSK's copies
+    // of the same hives with their logs (~/af-stage3/r5, 2026-11-08).
+    let p = Project::open(case.path()).unwrap();
+    let db = p.store.connection();
+    let mut stmt = db
+        .prepare(
+            "SELECT json_extract_string(r.attrs, '$.hive'), \
+             coalesce(json_extract_string(r.attrs, '$.owner'), '-'), count(*) \
+             FROM events e JOIN records r ON r.id = e.record \
+             WHERE e.kind = 'windows.registry.key_written' GROUP BY ALL ORDER BY ALL",
+        )
+        .unwrap();
+    let counts: Vec<(String, String, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let jc = "S-1-5-21-2734969515-1644526556-1039763013-1001";
+    let want: Vec<(String, String, i64)> = [
+        ("windows.amcache", "-", 1058),
+        ("windows.default", "-", 641),
+        ("windows.ntuser", "S-1-5-19", 695),
+        ("windows.ntuser", "S-1-5-20", 695),
+        ("windows.ntuser", jc, 5292),
+        ("windows.ntuser", "default profile", 630),
+        ("windows.sam", "-", 78),
+        ("windows.security", "-", 92),
+        ("windows.software", "-", 311_797),
+        ("windows.system", "-", 35_595),
+        ("windows.usrclass", jc, 6238),
+    ]
+    .into_iter()
+    .map(|(h, o, n)| (h.to_string(), o.to_string(), n))
+    .collect();
+    assert_eq!(counts, want);
 }

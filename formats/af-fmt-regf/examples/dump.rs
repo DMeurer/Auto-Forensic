@@ -13,23 +13,11 @@ fn main() {
         .unwrap_or_else(|e| panic!("{}: {e}", args[0]));
     eprintln!("replay: {:?}", hive.replay());
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
-    let mut todo = vec![String::new()];
-    while let Some(path) = todo.pop() {
-        let Some(k) = hive.key(&path) else {
-            eprintln!("can't open key {path:?}");
-            continue;
-        };
+    hive.walk(|path, k| {
         writeln!(out, "key\t{path}\t{}", k.last_written).unwrap();
         for v in &k.values {
             let hex: String = v.data.iter().map(|b| format!("{b:02x}")).collect();
             writeln!(out, "value\t{path}\t{}\t{}\t{hex}", v.name, v.value_type).unwrap();
         }
-        for s in k.subkeys.iter().rev() {
-            todo.push(if path.is_empty() {
-                s.clone()
-            } else {
-                format!("{path}\\{s}")
-            });
-        }
-    }
+    });
 }

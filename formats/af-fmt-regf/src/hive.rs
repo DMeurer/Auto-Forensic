@@ -12,9 +12,6 @@ use notatin::parser_builder::ParserBuilder;
 use std::collections::HashMap;
 use std::io::Cursor;
 
-/// FILETIME ticks (100 ns since 1601) of the Unix epoch.
-const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
-
 /// A parsed hive.
 pub struct Hive {
     parser: Parser,
@@ -69,8 +66,8 @@ pub fn is_dirty(hive: &[u8]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Key {
     pub name: String,
-    /// FILETIME ticks.
-    pub last_written: i64,
+    /// FILETIME ticks, as stored.
+    pub last_written: u64,
     pub subkeys: Vec<String>,
     pub values: Vec<Value>,
 }
@@ -140,23 +137,54 @@ impl Hive {
             .iter()
             .map(|s| s.key_name.clone())
             .collect();
-        let values = k
-            .value_iter()
-            .map(|v| Value {
-                name: v.detail.value_name(),
-                value_type: v.detail.data_type_raw(),
-                data: v.detail.value_bytes().unwrap_or_default(),
-            })
-            .collect();
-        let t = k.last_key_written_date_and_time();
-        Some(Key {
-            name: k.key_name,
-            last_written: t.timestamp() * 10_000_000
-                + i64::from(t.timestamp_subsec_nanos() / 100)
-                + UNIX_EPOCH_TICKS,
-            subkeys,
-            values,
+        Some(to_key(&k, subkeys))
+    }
+
+    /// Every key, depth first from the root in subkey list order, with its path (`\` between
+    /// names, empty for the root). Reads each key once and keeps nothing, unlike [`Hive::key`]'s
+    /// cache. A key cell met again (a crafted hive whose subkey lists loop or repeat) is skipped.
+    pub fn walk(&mut self, mut visit: impl FnMut(&str, &Key)) {
+        let Some(root) = self.parser.get_root_key().ok().flatten() else {
+            return;
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut todo = vec![(String::new(), root)];
+        while let Some((path, mut node)) = todo.pop() {
+            if !seen.insert(node.file_offset_absolute) {
+                continue;
+            }
+            let kids = node.read_sub_keys(&mut self.parser);
+            visit(
+                &path,
+                &to_key(&node, kids.iter().map(|k| k.key_name.clone()).collect()),
+            );
+            for kid in kids.into_iter().rev() {
+                let p = if path.is_empty() {
+                    kid.key_name.clone()
+                } else {
+                    format!("{path}\\{}", kid.key_name)
+                };
+                todo.push((p, kid));
+            }
+        }
+    }
+}
+
+fn to_key(k: &CellKeyNode, subkeys: Vec<String>) -> Key {
+    let values = k
+        .value_iter()
+        .map(|v| Value {
+            name: v.detail.value_name(),
+            value_type: v.detail.data_type_raw(),
+            data: v.detail.value_bytes().unwrap_or_default(),
         })
+        .collect();
+    Key {
+        name: k.key_name.clone(),
+        // The raw FILETIME: notatin's date conversion overflows for 0 and far-off times.
+        last_written: k.detail.last_key_written_date_and_time(),
+        subkeys,
+        values,
     }
 }
 
@@ -237,6 +265,14 @@ mod tests {
         assert_eq!(h.key("select").unwrap().name, "Select", "without case");
         assert!(h.key("Nope").is_none());
         assert_eq!(h.replay(), &Replay::Clean);
+    }
+
+    #[test]
+    fn walk_visits_every_key_once_in_order() {
+        let mut h = Hive::open(crate::build_test_hive(&["B", "A"], "lf"), vec![]).unwrap();
+        let mut seen = vec![];
+        h.walk(|p, k| seen.push((p.to_string(), k.subkeys.len())));
+        assert_eq!(seen, [(String::new(), 2), ("B".into(), 0), ("A".into(), 0)]);
     }
 
     #[test]

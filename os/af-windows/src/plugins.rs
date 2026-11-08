@@ -16,7 +16,7 @@ use af_core::timeline::{ClockDomainId, TimeMeaning};
 use std::sync::OnceLock;
 
 /// The hive kinds it reads; all optional, so it runs on whatever hives a system has.
-const HIVES: &[&str] = &[
+pub(crate) const HIVES: &[&str] = &[
     "windows.hive.system",
     "windows.hive.software",
     "windows.hive.ntuser",

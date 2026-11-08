@@ -14,6 +14,7 @@ pub mod loose;
 pub mod plugins;
 pub mod profile;
 pub mod registry;
+pub mod registry_timeline;
 
 pub use profile::WindowsProfile;
 
