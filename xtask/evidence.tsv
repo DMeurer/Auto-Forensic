@@ -27,3 +27,8 @@ lonewolf	LoneWolf.E06	1572802511	2e6b1e7cd25c17a297a51af25421467ae71440526242d43
 lonewolf	LoneWolf.E07	1572769343	821abac9b7b53e37cb5b296ef2954ea87921e75ea8b901d2823d7fc57a11252b	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E07
 lonewolf	LoneWolf.E08	1572723308	a363c2009617798312c52ffdbd5f8b442ebaf60c1d6cb55ff53e03f9a878ac39	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E08
 lonewolf	LoneWolf.E09	963603171	37c980ee3ca37e779d4e260f23a5f7a23585183c89231c2825145a911e0a8280	-	https://digitalcorpora.s3.amazonaws.com/corpora/scenarios/2018-lonewolf/LoneWolf_Image_Files/LoneWolf.E09
+plaso	NTUSER.DAT	786432	4a3232850f9677de96774b4de0020ac7f5e2efeb5e4576a200bb751d9e1c9d1d	-	https://raw.githubusercontent.com/log2timeline/plaso/f75784eea92ce1f946e822a675836da45d91309c/test_data/NTUSER.DAT
+plaso	NTUSER-WIN7.DAT	1310720	672abb15ae62fa8c002c5ee0a730cf83cd5f40706d5ffdec8f1179cf47a0bd03	-	https://raw.githubusercontent.com/log2timeline/plaso/f75784eea92ce1f946e822a675836da45d91309c/test_data/NTUSER-WIN7.DAT
+plaso	NTUSER-CCLEANER.DAT	524288	3cab6fd2eaff4912b85c3a0cb86d243a3408ae5301b89a9c7e3b79fb2a69b2ad	-	https://raw.githubusercontent.com/log2timeline/plaso/f75784eea92ce1f946e822a675836da45d91309c/test_data/NTUSER-CCLEANER.DAT
+plaso	SOFTWARE	37748736	c2e1a391d6be9740e79da7944e012ad9ac878902db38ec7fc225a2a68d262a1b	-	https://raw.githubusercontent.com/log2timeline/plaso/f75784eea92ce1f946e822a675836da45d91309c/test_data/SOFTWARE
+plaso	SYSTEM	15990784	96dc1f1cc3c0b44ef9af72d1c18a8e6a4338c67988f303d05693ca4be6bf7eb9	-	https://raw.githubusercontent.com/log2timeline/plaso/f75784eea92ce1f946e822a675836da45d91309c/test_data/SYSTEM

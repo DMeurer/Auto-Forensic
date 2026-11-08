@@ -74,6 +74,7 @@ pub struct Key {
 pub struct Value {
     /// Empty for the default value.
     pub name: String,
+    /// The type number as stored, device property types such as `0xFFFF0011` included.
     pub value_type: u32,
     pub data: Vec<u8>,
 }
@@ -134,7 +135,7 @@ impl Hive {
             .value_iter()
             .map(|v| Value {
                 name: v.detail.value_name(),
-                value_type: v.data_type as u32,
+                value_type: v.detail.data_type_raw(),
                 data: v.detail.value_bytes().unwrap_or_default(),
             })
             .collect();
