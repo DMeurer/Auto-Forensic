@@ -1295,7 +1295,7 @@ dependencies = [
 [[package]]
 name = "notatin"
 version = "1.0.1"
-source = "git+https://github.com/DMeurer/notatin?rev=219d80894b4e4c31a101ada94b531a0e8555538b#219d80894b4e4c31a101ada94b531a0e8555538b"
+source = "git+https://github.com/DMeurer/notatin?rev=014f6c5ef6a45123dea6b975e849e7e00650830b#014f6c5ef6a45123dea6b975e849e7e00650830b"
 dependencies = [
  "bitflags 2.13.2",
  "blake3",
@@ -1817,7 +1817,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",

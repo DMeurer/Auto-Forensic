@@ -13,4 +13,4 @@ workspace = true
 [dependencies]
 # notatin (Apache-2.0) from our fork, branch `af`: upstream's commit stage 1 tested (T7) plus
 # fixes for crashes fuzzing found (I25). See formats/README.md.
-notatin = { git = "https://github.com/DMeurer/notatin", rev = "219d80894b4e4c31a101ada94b531a0e8555538b" }
+notatin = { git = "https://github.com/DMeurer/notatin", rev = "014f6c5ef6a45123dea6b975e849e7e00650830b" }
