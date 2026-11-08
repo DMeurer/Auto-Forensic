@@ -121,7 +121,7 @@ fn filetime(k: &RegKey, name: &str) -> Option<Time> {
 }
 
 /// One event of `kind` (also its time meaning), pointing at the key's record.
-fn event(
+pub(crate) fn event(
     ctx: &mut RunContext<'_>,
     plugin: &Kind,
     (source, locator): (af_core::ids::SourceId, &af_core::bytes::Locator),

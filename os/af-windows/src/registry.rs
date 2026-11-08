@@ -17,6 +17,7 @@ pub const REG_SZ: u32 = 1;
 pub const REG_EXPAND_SZ: u32 = 2;
 pub const REG_BINARY: u32 = 3;
 pub const REG_DWORD: u32 = 4;
+pub const REG_MULTI_SZ: u32 = 7;
 
 /// The SYSTEM hive (`HKLM\SYSTEM`).
 pub fn system_hive() -> HiveId {
@@ -66,6 +67,29 @@ pub fn reg_sz(key: &RegKey, name: &str) -> Option<String> {
         .take_while(|&u| u != 0)
         .collect();
     Some(String::from_utf16_lossy(&units))
+}
+
+/// A `REG_MULTI_SZ` value as its strings, empty ones left out. `None` for another type or
+/// broken data (an odd length).
+pub fn reg_multi_sz(key: &RegKey, name: &str) -> Option<Vec<String>> {
+    let v = key.value(name)?;
+    if v.value_type != REG_MULTI_SZ || v.data.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = v
+        .data
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect();
+    Some(
+        String::from_utf16_lossy(&units)
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
+    )
 }
 
 /// A `REG_DWORD` value.

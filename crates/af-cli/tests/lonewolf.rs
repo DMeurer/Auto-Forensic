@@ -109,6 +109,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::evtx::EventLogs,
             &af_windows::registry_timeline::KeyTimes,
             &af_windows::host::Host,
+            &af_windows::network::Network,
         ],
         &profiles,
     )
@@ -158,8 +159,14 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     // R3: SYSTEM, SOFTWARE, DEFAULT, Amcache and jcloudy's NTUSER.DAT are dirty, and all
     // replay from their logs, so no hive gets a note.
     assert!(!status.contains("note: hive"), "{status}");
-    // E1: every log reads, so no event log gets a note either.
-    assert!(!status.contains("note:"), "{status}");
+    // E1: every log reads, so no event log gets a note either. R9's only note: the Wi-Fi
+    // adapter's lease times are no calendar times.
+    let notes: Vec<&str> = status.lines().filter(|l| l.contains("note:")).collect();
+    assert_eq!(notes.len(), 1, "{status}");
+    assert!(
+        notes[0].contains("interface Wi-Fi: DHCP lease times"),
+        "{status}"
+    );
     for line in [
         "  windows.evtx: 146",
         "    windows.evtx.events v1: read, 55638 items",
@@ -294,4 +301,40 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             "{kind} points at its key's record"
         );
     }
+
+    // R9: the Wi-Fi adapter's gateway MAC, and profile "Net 2.4" last connected at 08:26:14.496
+    // local, in Eastern daylight time by the hive's rules. Lease times are no calendar times.
+    let wifi: String = db
+        .query_row(
+            "SELECT attrs FROM facts WHERE kind = 'windows.network.interface' AND subject = 'Wi-Fi'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        wifi.contains(r#""gateway_mac":"5C-8F-E0-2A-1C-68""#)
+            && wifi.contains(r#""lease_obtained_raw":830452"#),
+        "{wifi}"
+    );
+    let (ts, offset): (i64, i16) = db
+        .query_row(
+            "SELECT ts, tz_offset_min FROM events WHERE kind = 'windows.network.last_connected'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (ts, offset),
+        (131_674_911_744_960_000, -240),
+        "2018-04-06 12:26:14.496 UTC"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM events WHERE kind LIKE 'windows.network.lease%'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }

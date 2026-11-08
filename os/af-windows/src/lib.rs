@@ -7,11 +7,13 @@
 //! |---|---|
 //! | `FILETIME` (NTFS, registry, EVTX, Prefetch) | [`af_core::time::encoding::TICKS_1601`] |
 //! | FAT date and time words | [`af_core::time::encoding::DOS_LOCAL`], `DOS_LOCAL_10MS`, `DOS_LOCAL_DATE` |
+//! | `SYSTEMTIME` in local time (NetworkList dates) | [`af_core::time::encoding::LOCAL_CALENDAR`] |
 
 pub mod evtx;
 pub mod evtx_map;
 pub mod host;
 pub mod loose;
+pub mod network;
 pub mod plugins;
 pub mod profile;
 pub mod registry;
