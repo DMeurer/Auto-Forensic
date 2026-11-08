@@ -51,6 +51,19 @@ pub struct RunContext<'a> {
 /// Opens the bytes of an artifact.
 pub trait Opener {
     fn open(&self, artifact: &Artifact) -> std::io::Result<Box<dyn ByteSource>>;
+
+    /// Runs `f` on the file system an `fs.*` artifact names (M3). Openers without file systems
+    /// say so.
+    fn file_system(
+        &self,
+        _artifact: &Artifact,
+        _f: &mut dyn FnMut(&dyn crate::fs::FileSystem),
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this opener has no file systems",
+        ))
+    }
 }
 
 /// An event a plugin produced.

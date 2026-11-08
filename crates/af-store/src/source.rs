@@ -755,7 +755,7 @@ fn read_virtual(files: &[PathBuf], mut offset: u64, len: u64) -> std::io::Result
     Ok(out)
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

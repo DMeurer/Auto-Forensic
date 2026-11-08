@@ -124,6 +124,21 @@ impl ProjectOpener {
 }
 
 impl Opener for ProjectOpener {
+    fn file_system(&self, a: &Artifact, f: &mut dyn FnMut(&dyn FileSystem)) -> io::Result<()> {
+        let s = self
+            .sources
+            .iter()
+            .find(|s| s.id == a.source)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "artifact without a source"))?;
+        let fss = self.file_systems(s)?;
+        let (_, fs) = fss
+            .iter()
+            .find(|(at, _)| at == &a.locator)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no file system there"))?;
+        f(fs.as_ref());
+        Ok(())
+    }
+
     fn open(&self, a: &Artifact) -> io::Result<Box<dyn ByteSource>> {
         let s = self
             .sources

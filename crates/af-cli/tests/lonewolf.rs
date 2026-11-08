@@ -59,8 +59,14 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
 
     let index = p.store.artifacts().unwrap();
     let mut kinds: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut file_systems = vec![];
     for a in index.all() {
         let steps = a.locator.steps();
+        // M3: the NTFS file systems of the system's partitions, for fs.timeline.
+        if a.kind.as_str() == "fs.ntfs" {
+            file_systems.push(steps[1].id.clone());
+            continue;
+        }
         assert_eq!(steps[1].id, "4", "on the Windows partition");
         assert_eq!(a.sha256.len(), 64);
         kinds
@@ -68,6 +74,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             .or_default()
             .push(steps.last().unwrap().id.clone());
     }
+    file_systems.sort();
+    assert_eq!(file_systems, ["1", "4"]);
     let count = |k: &str| kinds.get(k).map_or(0, Vec::len);
     assert_eq!(count("windows.evtx"), 146);
     assert_eq!(
@@ -115,6 +123,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::bam::Bam,
             &af_windows::sam::Sam,
             &af_windows::usb::Usb,
+            &af_core::fs_timeline::Timeline,
         ],
         &profiles,
     )
@@ -437,5 +446,27 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             41,
             "{3869c279-31b8-11e8-9b12-ecf4bb487fed} VID_0781&PID_5580\\AA010603160707470215"
         )
+    );
+
+    // M3: fs.timeline on both NTFS partitions (~/af-stage3/m3): the Windows partition's 142,956
+    // entries (as MFTECmd) with the $SI times of the loose $MFT plugin, and the recovery
+    // partition's 31.
+    let parts: Vec<(String, i64, i64)> = db
+        .prepare(
+            "SELECT split_part(r.locator, '/', 2), count(DISTINCT r.id), count(*) FROM events e \
+             JOIN records r ON r.id = e.record WHERE e.created_by = 'fs.timeline' \
+             GROUP BY 1 ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            ("volume.partition:1".to_string(), 31, 248),
+            ("volume.partition:4".to_string(), 142_956, 1_143_648)
+        ]
     );
 }

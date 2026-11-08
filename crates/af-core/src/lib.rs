@@ -8,6 +8,7 @@ pub mod bytes;
 pub mod capability;
 pub mod concepts;
 pub mod fs;
+pub mod fs_timeline;
 pub mod ids;
 pub mod names;
 pub mod path;

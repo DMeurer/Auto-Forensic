@@ -143,6 +143,23 @@ impl Project {
                     });
                 }
             }
+            // M3: each file system on the system's volumes is an input of `fs.timeline`. An image
+            // doesn't change, so its hash and the volume's place stand for the volume's bytes.
+            if matches!(source.kind.as_str(), "image" | "device") {
+                for ((locator, fs), vol) in fss.iter().zip(&fs_vols) {
+                    if sys.volumes.contains(&vol.id) {
+                        use sha2::{Digest, Sha256};
+                        let key = format!("{}\n{locator}", source.sha256);
+                        index.add(Artifact {
+                            kind: fs.info().kind.clone(),
+                            locator: locator.clone(),
+                            source: source.id,
+                            system: Some(id),
+                            sha256: crate::source::hex(&Sha256::digest(key)),
+                        });
+                    }
+                }
+            }
             ids.push(id);
         }
         if ids.is_empty() {

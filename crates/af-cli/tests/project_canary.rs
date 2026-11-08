@@ -164,8 +164,9 @@ fn project_canary() {
         let mut after = system_blocks(&after);
         let stick_at = after
             .iter()
-            .position(|b| b.ends_with(" FAT32-Win.E01\n    no plugin has run on it yet"))
-            .unwrap_or_else(|| panic!("the stick isn't a system no plugin ran on: {after:?}"));
+            // fs.timeline applies to every system; FAT has no adapter yet, so nothing to read.
+            .position(|b| b.ends_with(" FAT32-Win.E01\n    fs.timeline v1: not in this project"))
+            .unwrap_or_else(|| panic!("the stick isn't a system with nothing read: {after:?}"));
         assert!(after.remove(stick_at).contains(" none "));
         before.sort();
         after.sort();
