@@ -23,6 +23,8 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::registry_timeline::KeyTimes,
     &af_windows::host::Host,
     &af_windows::network::Network,
+    &af_windows::autoruns::RunKeys,
+    &af_windows::autoruns::Services,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

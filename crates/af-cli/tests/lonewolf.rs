@@ -110,6 +110,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::registry_timeline::KeyTimes,
             &af_windows::host::Host,
             &af_windows::network::Network,
+            &af_windows::autoruns::RunKeys,
+            &af_windows::autoruns::Services,
         ],
         &profiles,
     )
@@ -337,4 +339,43 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         .unwrap(),
         0
     );
+
+    // R10: RECmd's Kroll batch on the machine and user hives (~/af-stage3/r8, r10): 11 Run
+    // entries, and the 656 services of ControlSet001.
+    let mut runs: Vec<(String, String)> = db
+        .prepare(
+            "SELECT subject, coalesce(json_extract_string(attrs, '$.owner'), '-') \
+             FROM facts WHERE kind = 'windows.autorun'",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    runs.sort();
+    let user = |n: &str| (n.to_string(), jc.to_string());
+    let machine = |n: &str| (n.to_string(), "-".to_string());
+    let mut want = vec![
+        machine("Apoint"),
+        machine("BoxSync"),
+        machine("SecurityHealth"),
+        machine("application"),
+        user("GoogleDriveSync"),
+        user("OneDrive"),
+        user("Uninstall 18.025.0204.0009"),
+        user("Uninstall 18.025.0204.0009\\amd64"),
+        ("OneDriveSetup".into(), "S-1-5-19".into()),
+        ("OneDriveSetup".into(), "S-1-5-20".into()),
+        ("OneDriveSetup".into(), "default profile".into()),
+    ];
+    want.sort();
+    assert_eq!(runs, want);
+    let services: i64 = db
+        .query_row(
+            "SELECT count(*) FROM facts WHERE kind = 'windows.service'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(services, 656);
 }

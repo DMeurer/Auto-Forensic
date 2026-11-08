@@ -124,6 +124,19 @@ impl FakeRegistry {
         data: &[u8],
     ) -> &mut Self {
         let hive = HiveId::machine(Kind::new(hive).expect("hive ID is a namespaced name"));
+        self.set_in(&hive, key, name, value_type, data)
+    }
+
+    /// [`FakeRegistry::set`] in any hive, a user's included.
+    pub fn set_in(
+        &mut self,
+        hive: &HiveId,
+        key: &str,
+        name: &str,
+        value_type: u32,
+        data: &[u8],
+    ) -> &mut Self {
+        let hive = hive.clone();
         let path = Self::path(key);
         self.ensure(&hive, &path);
         let k = self
@@ -145,6 +158,11 @@ impl FakeRegistry {
     /// Says which file a machine hive came from, for [`Registry::origin`].
     pub fn set_origin(&mut self, hive: &str, source: SourceId, locator: Locator) -> &mut Self {
         let hive = HiveId::machine(Kind::new(hive).expect("hive ID is a namespaced name"));
+        self.set_origin_in(hive, source, locator)
+    }
+
+    /// [`FakeRegistry::set_origin`] for any hive, a user's included.
+    pub fn set_origin_in(&mut self, hive: HiveId, source: SourceId, locator: Locator) -> &mut Self {
         self.origins.insert(hive, (source, locator));
         self
     }

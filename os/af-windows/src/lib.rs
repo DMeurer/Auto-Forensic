@@ -9,6 +9,7 @@
 //! | FAT date and time words | [`af_core::time::encoding::DOS_LOCAL`], `DOS_LOCAL_10MS`, `DOS_LOCAL_DATE` |
 //! | `SYSTEMTIME` in local time (NetworkList dates) | [`af_core::time::encoding::LOCAL_CALENDAR`] |
 
+pub mod autoruns;
 pub mod evtx;
 pub mod evtx_map;
 pub mod host;
