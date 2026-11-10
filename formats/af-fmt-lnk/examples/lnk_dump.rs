@@ -1,5 +1,5 @@
 //! X3: one JSON line per shortcut file, for comparison with LECmd (`x3_compare.py`).
-//! Usage: `cargo run --release -p af-fmt-lnk --example dump FILE.lnk... > out.jsonl`
+//! Usage: `cargo run --release -p af-fmt-lnk --example lnk_dump FILE.lnk... > out.jsonl`
 
 use std::io::Write;
 

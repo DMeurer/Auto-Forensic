@@ -1,5 +1,5 @@
 //! M5: every record of a `$J` with its parent path, for comparison with MFTECmd.
-//! Usage: `cargo run --release -p af-fmt-usn --example dump J MFT > out.tsv`
+//! Usage: `cargo run --release -p af-fmt-usn --example usn_dump J MFT > out.tsv`
 //! Lines: entry, sequence, parent entry, parent sequence, USN, FILETIME, reasons (hex), name,
 //! parent path; tab between.
 

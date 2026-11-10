@@ -1,5 +1,5 @@
 //! Every base record of an `$MFT` as tab-separated lines, for comparing with MFTECmd (M1, M4).
-//! Usage: `cargo run --release -p af-fmt-mft --example dump MFT > out.tsv`
+//! Usage: `cargo run --release -p af-fmt-mft --example mft_dump MFT > out.tsv`
 
 #![allow(clippy::print_stdout)]
 

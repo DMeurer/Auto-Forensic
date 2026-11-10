@@ -1,5 +1,5 @@
 //! R4: every key and value of a hive as af reads it, for comparison with yarp.
-//! Usage: `cargo run --release -p af-fmt-regf --example dump HIVE [LOG...] > out.tsv`
+//! Usage: `cargo run --release -p af-fmt-regf --example regf_dump HIVE [LOG...] > out.tsv`
 //! Lines: `key<TAB>path<TAB>last written (FILETIME)` and
 //! `value<TAB>path<TAB>name<TAB>type<TAB>data as hex`; the root's path is empty.
 

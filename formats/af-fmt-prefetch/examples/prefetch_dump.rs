@@ -1,6 +1,6 @@
 //! X1: one JSON line per Prefetch file, in the form of stage 1's `pf_dump`, for comparison with
 //! PECmd (`t4_prefetch_compare.py`). Usage: `cargo run --release -p af-fmt-prefetch --example
-//! dump FILE.pf... > out.jsonl`
+//! prefetch_dump FILE.pf... > out.jsonl`
 
 use std::io::Write;
 
