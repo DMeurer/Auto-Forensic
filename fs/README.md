@@ -10,6 +10,7 @@ One crate per file system, named `af-fs-<fs>`, each implementing `af_core::fs::F
 |---|---|---|
 | Follow `$ATTRIBUTE_LIST` when listing a folder (`directory_entries_by_record`) | `test(fs)` + `fix(fs)` | Large folders keep their `$INDEX_ALLOCATION` in an extension record; on Jean four folders listed 0 to 3 of thousands of names |
 | Make `NtfsFs::gather_records` public | `test(fs)` + `feat(fs)` | Names, sizes and streams in extension records (I13, I15) |
+| Skip junk in `UsnJournalReader` with a loop | `test(usn)` + `fix(usn)` | It called itself for every 8 bytes it skipped, so a long run of junk in a `$J` overflowed the stack and aborted (M5). `af-fmt-usn` uses the same pin |
 
 Before opening a pull request upstream, still to do: sign the commits with gitsign, run `cargo deny check`, `cargo llvm-cov --lib --show-missing-lines` (100 % line coverage) and the fuzz targets, none of which are installed here.
 

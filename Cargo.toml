@@ -19,6 +19,7 @@ af-windows = { path = "os/af-windows" }
 af-fmt-regf = { path = "formats/af-fmt-regf" }
 af-fmt-evtx = { path = "formats/af-fmt-evtx" }
 af-fmt-mft = { path = "formats/af-fmt-mft" }
+af-fmt-usn = { path = "formats/af-fmt-usn" }
 af-fmt-utmp = { path = "formats/af-fmt-utmp" }
 af-fmt-volume = { path = "formats/af-fmt-volume" }
 af-linux = { path = "os/af-linux" }

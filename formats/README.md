@@ -14,3 +14,8 @@ One crate per file format, named `af-fmt-<format>`. A format crate takes bytes (
 | `fix: keep all stored bytes of fixed-size values` | A `REG_DWORD` stored in 8 bytes (or a `REG_QWORD` in 16) was cut to its type's size; yarp keeps the stored bytes, and the rest can hold data (R4) |
 
 The first three were found by the `regf` fuzz target (`fuzz/`, I25), the last by comparing with yarp (R4). To fix the next finding locally, add `[patch."https://github.com/DMeurer/notatin"] notatin = { path = "../../notatin" }` to `fuzz/Cargo.toml` while working, and don't commit it.
+
+## `af-fmt-usn`
+
+The change journal (`$UsnJrnl:$J`) on `ntfs-core`'s reader from our fork (the same pin as `af-fs-ntfs`, see `fs/README.md`), plus parent paths rewound through the journal as MFTECmd does (M5). `ntfs-core` keeps no time it can't express (zero, negative, before 1970); such a record has no time here.
+

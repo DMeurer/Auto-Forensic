@@ -1,0 +1,19 @@
+[package]
+name = "af-fmt-usn"
+description = "NTFS change journal ($UsnJrnl:$J) records from bytes, on our ntfs-core fork, with parent paths rewound through the journal."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Our fork of ntfs-core (Apache-2.0), the same pin as af-fs-ntfs: see fs/README.md.
+ntfs-core = { git = "https://github.com/DMeurer/ntfs-forensic", rev = "d2161c2980ec23ac7a68fc397a569418ca081c56" }
+
+[dev-dependencies]
+# The dump example seeds folder names from a $MFT.
+af-fmt-mft.workspace = true
