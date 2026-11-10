@@ -139,6 +139,59 @@ impl Opener for ProjectOpener {
         Ok(())
     }
 
+    fn exists(&self, a: &Artifact) -> io::Result<bool> {
+        let s = self
+            .sources
+            .iter()
+            .find(|s| s.id == a.source)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "artifact without a source"))?;
+        let rel = a.locator.steps().last().map_or("", |st| st.id.as_str());
+        let parse = |kind| {
+            ViewPath::parse(
+                rel,
+                af_core::path::PathStyle {
+                    separator: '/',
+                    case: af_core::path::CasePolicy::Exact,
+                },
+                kind,
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+        };
+        match s.kind.as_str() {
+            "folder" => {
+                let path = parse(if cfg!(windows) {
+                    NameKind::Utf16
+                } else {
+                    NameKind::Bytes
+                })?;
+                use af_core::system::VolumeProbe;
+                Ok(FolderVolume::new(VolumeId(0), &s.files[0]).exists(&path))
+            }
+            "archive" | "image" | "device" => {
+                let steps = a.locator.steps();
+                let on = Locator(steps[..steps.len().saturating_sub(1)].to_vec());
+                let fss = self.file_systems(s)?;
+                let Some((_, fs)) = fss.iter().find(|(l, _)| *l == on) else {
+                    return Ok(false);
+                };
+                let names = if s.kind == "archive" {
+                    NameKind::Bytes
+                } else {
+                    NameKind::Utf16
+                };
+                let vol = FsVolume {
+                    id: VolumeId(0),
+                    fs: fs.as_ref(),
+                };
+                Ok(vol.lookup(&parse(names)?).is_some())
+            }
+            other => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("{other} sources have no paths"),
+            )),
+        }
+    }
+
     fn open(&self, a: &Artifact) -> io::Result<Box<dyn ByteSource>> {
         let s = self
             .sources

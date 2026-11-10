@@ -168,10 +168,29 @@ impl OsProfile for WindowsProfile {
             .map(|u| users.join(u))
             .collect();
         tops.push(MemVolume::path("ProgramData/Microsoft/Windows/Start Menu"));
+        let is_link = |n: &str| n.to_lowercase().ends_with(".lnk");
         for top in tops {
-            links_below(vol, top, 0, &mut |p| {
+            files_below(vol, top, 0, &is_link, &mut |p| {
                 found.push((vol.id(), p, kind("windows.lnk")))
             });
+        }
+        // X4: scheduled tasks, one XML file per task, in folders by task path.
+        files_below(
+            vol,
+            MemVolume::path("Windows/System32/Tasks"),
+            0,
+            &|_| true,
+            &mut |p| found.push((vol.id(), p, kind("windows.task"))),
+        );
+        // X4: the Recycle Bin's `$I` files, one folder per user SID.
+        let bin = MemVolume::path("$Recycle.Bin");
+        for sid in vol.list(&bin) {
+            let dir = bin.join(sid);
+            for name in vol.list(&dir) {
+                if name.display().to_lowercase().starts_with("$i") {
+                    found.push((vol.id(), dir.join(name), kind("windows.recyclebin.info")));
+                }
+            }
         }
         // Listed names exist, so they skip the lookup.
         for (dir, ext, k) in [
@@ -253,24 +272,28 @@ impl OsProfile for WindowsProfile {
 /// Folder depth past which a walk stops: deeper means a loop (a junction a folder copy followed).
 const MAX_WALK_DEPTH: usize = 32;
 
-/// Every `.lnk` file below `dir`, any letter case. A volume lists a file as an empty folder,
-/// so every other name is tried as one.
-fn links_below(
+/// Every file below `dir` whose name `keep` accepts. A volume lists a file as an empty folder,
+/// so a name with nothing below it is taken as a file; a path that doesn't open as one (an
+/// empty folder) is dropped when the artifact is hashed.
+fn files_below(
     vol: &dyn VolumeProbe,
     dir: ViewPath,
     depth: usize,
+    keep: &dyn Fn(&str) -> bool,
     found: &mut dyn FnMut(ViewPath),
 ) {
     if depth > MAX_WALK_DEPTH {
         return;
     }
     for name in vol.list(&dir) {
-        let is_link = name.display().to_lowercase().ends_with(".lnk");
+        let text = name.display();
         let path = dir.join(name);
-        if is_link {
-            found(path);
+        if vol.list(&path).is_empty() {
+            if keep(&text) {
+                found(path);
+            }
         } else {
-            links_below(vol, path, depth + 1, found);
+            files_below(vol, path, depth + 1, keep, found);
         }
     }
 }
@@ -402,6 +425,11 @@ mod tests {
                 // Not where users make or use shortcuts (X3, the user's choice).
                 "Windows/WinSxS/amd64_explorer-shortcuts/Paint.lnk",
                 "Windows/ServiceProfiles/LocalService/Desktop/x.lnk",
+                "$Recycle.Bin/S-1-5-21-1-1001/$I23A30B.docx",
+                "$Recycle.Bin/S-1-5-21-1-1001/$R23A30B.docx",
+                "$Recycle.Bin/S-1-5-21-1-1001/desktop.ini",
+                "Windows/System32/Tasks/Microsoft/Windows/Defrag/ScheduledDefrag",
+                "Windows/System32/Tasks/Updater",
             ],
         );
         let (sid, vid) = counters();
@@ -449,6 +477,15 @@ mod tests {
                 "Users/admin/AppData/Roaming/Microsoft/Windows/Recent/key.lnk",
             ),
             ("windows.prefetch", "Windows/Prefetch/CMD.EXE-0BD30981.pf"),
+            (
+                "windows.recyclebin.info",
+                "$Recycle.Bin/S-1-5-21-1-1001/$I23A30B.docx",
+            ),
+            (
+                "windows.task",
+                "Windows/System32/Tasks/Microsoft/Windows/Defrag/ScheduledDefrag",
+            ),
+            ("windows.task", "Windows/System32/Tasks/Updater"),
         ];
         assert_eq!(got, want.map(|(k, p)| (k.to_string(), p.to_string())));
     }

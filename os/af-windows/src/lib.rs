@@ -21,9 +21,11 @@ pub mod network;
 pub mod plugins;
 pub mod prefetch;
 pub mod profile;
+pub mod recyclebin;
 pub mod registry;
 pub mod registry_timeline;
 pub mod sam;
+pub mod tasks;
 pub mod usb;
 pub mod usn;
 

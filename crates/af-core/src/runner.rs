@@ -52,6 +52,15 @@ pub struct RunContext<'a> {
 pub trait Opener {
     fn open(&self, artifact: &Artifact) -> std::io::Result<Box<dyn ByteSource>>;
 
+    /// Whether the file or folder an artifact's locator names exists in its source, such as the
+    /// `$R` beside a Recycle Bin `$I` (X4). Openers that can't tell say so.
+    fn exists(&self, _artifact: &Artifact) -> std::io::Result<bool> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this opener can't tell whether a path exists",
+        ))
+    }
+
     /// Runs `f` on the file system an `fs.*` artifact names (M3). Openers without file systems
     /// say so.
     fn file_system(

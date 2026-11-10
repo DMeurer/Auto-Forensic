@@ -80,6 +80,11 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     assert_eq!(count("windows.evtx"), 146);
     // X3: shortcuts below the user profiles and in the shared Start Menu.
     assert_eq!(count("windows.lnk"), 198);
+    // X4: the Recycle Bin's $I files and the scheduled tasks.
+    assert_eq!(
+        (count("windows.recyclebin.info"), count("windows.task")),
+        (5, 174)
+    );
     assert_eq!(
         count("windows.hive.log"),
         22,
@@ -119,6 +124,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::evtx::EventLogs,
             &af_windows::prefetch::Prefetch,
             &af_windows::lnk::Shortcuts,
+            &af_windows::recyclebin::RecycleBin,
+            &af_windows::tasks::Tasks,
             &af_windows::registry_timeline::KeyTimes,
             &af_windows::host::Host,
             &af_windows::network::Network,
@@ -549,5 +556,105 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     assert_eq!(
         (links, times, key.as_str()),
         (198, 298, "true removable 4C36F4AC CloudLog")
+    );
+
+    // X4: the Recycle Bin, as RBCmd reads it (~/af-stage3/x4): five items jcloudy deleted, all
+    // still recoverable (their $R files and folders are there).
+    let bin: Vec<(String, i64, i64, bool)> = db
+        .prepare(
+            "SELECT json_extract_string(r.attrs, '$.original_path'), \
+             json_extract(r.attrs, '$.size')::BIGINT, e.ts, \
+             json_extract(r.attrs, '$.recoverable')::BOOLEAN FROM records r \
+             JOIN events e ON e.record = r.id WHERE r.kind = 'windows.recyclebin.item' \
+             ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let bin: Vec<(&str, i64, i64, bool)> = bin
+        .iter()
+        .map(|(p, size, t, r)| (p.rsplit('\\').next().unwrap(), *size, *t, *r))
+        .collect();
+    let cubs = "Cubs' Anthony Rizzo Praises Parkland Kids, Says 'It's too Easy to Get a Gun'";
+    let king = "Larry King_ Time to Repeal the 'Poorly Written' Second Amendment";
+    assert_eq!(
+        bin,
+        [
+            (
+                &*format!("{cubs}.html"),
+                286_463,
+                131_673_684_171_820_000,
+                true
+            ),
+            (
+                &*format!("{cubs}_files"),
+                3_838_542,
+                131_673_684_170_950_000,
+                true
+            ),
+            (
+                &*format!("{king}.html"),
+                289_380,
+                131_673_684_171_900_000,
+                true
+            ),
+            (
+                &*format!("{king}_files"),
+                5_092_043,
+                131_673_684_171_380_000,
+                true
+            ),
+            ("DemGun.jpg", 124_847, 131_674_769_613_690_000, true),
+        ]
+    );
+    let tasks: Vec<(String, Option<i64>)> = db
+        .prepare(
+            "SELECT json_extract_string(r.attrs, '$.uri'), e.ts FROM records r \
+             LEFT JOIN events e ON e.record = r.id WHERE r.kind = 'windows.task' \
+             AND json_extract_string(r.attrs, '$.uri') NOT LIKE '%Microsoft%' ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let (task_records, task_events): (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM records WHERE kind = 'windows.task'), \
+             (SELECT count(*) FROM events WHERE kind = 'windows.task.registered')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    // All 174 task files read; 22 carry a registration date. The tasks not from Microsoft
+    // (by URI; two Microsoft ones are spelled in lower case) carry none.
+    assert_eq!((task_records, task_events), (174, 22));
+    let tasks: Vec<(&str, bool)> = tasks
+        .iter()
+        .map(|(u, t)| (u.as_str(), t.is_some()))
+        .collect();
+    assert_eq!(
+        tasks,
+        [
+            ("\\DropboxUpdateTaskMachineCore", false),
+            ("\\DropboxUpdateTaskMachineUA", false),
+            ("\\GoogleUpdateTaskMachineCore", false),
+            ("\\GoogleUpdateTaskMachineUA", false),
+            (
+                "\\OneDrive Standalone Update Task-S-1-5-21-2734969515-1644526556-1039763013-1001",
+                false
+            ),
+            ("\\nWizard_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}", false),
+            (
+                "microsoft\\windows\\applicationdata\\appuriverifierdaily",
+                false
+            ),
+            (
+                "microsoft\\windows\\applicationdata\\appuriverifierinstall",
+                false
+            ),
+        ]
     );
 }
