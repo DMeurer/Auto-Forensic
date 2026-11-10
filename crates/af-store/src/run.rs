@@ -323,9 +323,11 @@ pub fn run_project(
         for (plugin, notes) in by_plugin {
             spool.save_system_notes(plugin, &notes)?;
         }
-        for (l, by) in &sink.links {
-            spool.add_link(l.id, l.kind.as_str(), &l.from, &l.to, by)?;
-        }
+        spool.add_links(
+            sink.links
+                .iter()
+                .map(|(l, by)| (l.id, l.kind.as_str(), &l.from, &l.to, by.as_str())),
+        )?;
     }
 
     // 2. Write the project, briefly.

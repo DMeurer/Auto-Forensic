@@ -130,6 +130,7 @@ dependencies = [
  "af-fmt-evtx",
  "af-fmt-mft",
  "af-fmt-regf",
+ "af-fmt-usn",
  "regex",
  "serde",
  "serde-saphyr",

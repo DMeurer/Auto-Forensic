@@ -124,6 +124,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::sam::Sam,
             &af_windows::usb::Usb,
             &af_core::fs_timeline::Timeline,
+            &af_windows::usn::Journal,
         ],
         &profiles,
     )
@@ -468,5 +469,32 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             ("volume.partition:1".to_string(), 31, 248),
             ("volume.partition:4".to_string(), 142_956, 1_143_648)
         ]
+    );
+
+    // M6: the Windows partition's change journal (~/af-stage3/m6), equal to MFTECmd: 352,849
+    // records, one event per change flag (681,177), each linked to its file. jcloudy deleted
+    // "Cloudy thoughts (4apr).docx" from the desktop at 2018-04-05 02:39:29.7499774 UTC.
+    let (records, events, links, deleted): (i64, i64, i64, String) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM records WHERE kind = 'ntfs.usn.record'), \
+             (SELECT count(*) FROM events WHERE created_by = 'windows.usn'), \
+             (SELECT count(*) FROM links WHERE created_by = 'windows.usn'), \
+             (SELECT string_agg(e.ts || ' ' || json_extract_string(r.attrs, '$.parent_path') \
+                 || ' ' || json_extract_string(r.attrs, '$.entry'), ';') \
+              FROM events e JOIN records r ON r.id = e.record \
+              WHERE e.kind = 'ntfs.usn.file_delete' \
+              AND json_extract_string(r.attrs, '$.name') = 'Cloudy thoughts (4apr).docx')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (records, events, links, deleted.as_str()),
+        (
+            352_849,
+            681_177,
+            681_177,
+            "131673695697499774 /Users/jcloudy/Desktop 131041"
+        )
     );
 }

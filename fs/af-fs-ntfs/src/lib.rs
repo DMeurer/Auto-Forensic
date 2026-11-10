@@ -8,7 +8,7 @@
 //! the data runs (not through `ntfs-core`'s `read_at`, which re-reads from the start on every
 //! call), and offsets map back to the image. Resident and compressed data is read whole.
 
-use af_core::bytes::{ByteSource, DecodedSource, Extent, ExtentSource, ExtentTarget};
+use af_core::bytes::{ByteSource, DecodedSource, Extent, ExtentSource, ExtentTarget, SourceReader};
 use af_core::fs::{
     Entry, EntryKind, EntryName, FileSystem, FsInfo, StreamInfo, StreamName, TimeName, TimeRole,
 };
@@ -20,7 +20,7 @@ use ntfs_core::{
     Attribute, AttributeBody, FileName, FileReference, MftRecordHeader, NtfsError, NtfsFs,
     StandardInformation, parse_attributes, runlist::Run,
 };
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 use std::sync::Arc;
 
 const STANDARD_INFORMATION: u32 = 0x10;
@@ -36,34 +36,6 @@ pub struct Ntfs {
     records: u64,
     /// The `$MFT`'s own runs, to look at a record's raw bytes when `ntfs-core` can't read it.
     mft_runs: Vec<ntfs_core::Run>,
-}
-
-/// A byte source as `Read + Seek`, which `ntfs-core` reads through.
-struct SourceReader {
-    src: Arc<dyn ByteSource>,
-    pos: u64,
-}
-
-impl Read for SourceReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.src.read_at(self.pos, buf)?;
-        self.pos += n as u64;
-        Ok(n)
-    }
-}
-
-impl Seek for SourceReader {
-    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
-        let (base, delta) = match to {
-            SeekFrom::Start(n) => (0, n as i128),
-            SeekFrom::End(d) => (self.src.len(), d as i128),
-            SeekFrom::Current(d) => (self.pos, d as i128),
-        };
-        let at = u64::try_from(base as i128 + delta)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
-        self.pos = at;
-        Ok(at)
-    }
 }
 
 fn err(e: NtfsError) -> io::Error {
@@ -109,11 +81,7 @@ fn reference(id: &FileId) -> Option<FileReference> {
 impl Ntfs {
     /// Opens the NTFS volume in `volume`, such as a partition view.
     pub fn open(volume: Arc<dyn ByteSource>) -> io::Result<Self> {
-        let fs = NtfsFs::open(SourceReader {
-            src: volume.clone(),
-            pos: 0,
-        })
-        .map_err(err)?;
+        let fs = NtfsFs::open(SourceReader::new(volume.clone())).map_err(err)?;
         let rec0 = fs.read_record(0).map_err(err)?;
         let mft_size = attributes(&rec0)?
             .iter()

@@ -71,6 +71,37 @@ impl Store {
         Ok(())
     }
 
+    /// Stores many links in one go, as (id, kind, from, to, created by): a plugin can make
+    /// hundreds of thousands (M6, one per change journal event).
+    pub fn add_links<'a>(
+        &mut self,
+        links: impl IntoIterator<Item = (u128, &'a str, &'a Endpoint, &'a Endpoint, &'a str)>,
+    ) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut app = tx.appender("links")?;
+            for (id, kind, from, to, created_by) in links {
+                let (f, t) = (from.to_columns(), to.to_columns());
+                app.append_row(params![
+                    id,
+                    kind,
+                    f.kind,
+                    f.id,
+                    f.system,
+                    f.file_scheme,
+                    f.file_value,
+                    t.kind,
+                    t.id,
+                    t.system,
+                    t.file_scheme,
+                    t.file_value,
+                    created_by
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
     /// IDs and creators of all links, ordered by ID.
     pub fn links(&self) -> Result<Vec<(u128, String)>, Error> {
         let mut stmt = self

@@ -138,6 +138,41 @@ pub trait ByteSource: Send + Sync {
     }
 }
 
+/// A byte source as `Read + Seek`, for readers that want one (`ntfs-core`).
+pub struct SourceReader {
+    src: Arc<dyn ByteSource>,
+    pos: u64,
+}
+
+impl SourceReader {
+    /// Reads `src` from its start.
+    pub fn new(src: Arc<dyn ByteSource>) -> Self {
+        Self { src, pos: 0 }
+    }
+}
+
+impl io::Read for SourceReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.src.read_at(self.pos, buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl io::Seek for SourceReader {
+    fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
+        let (base, delta) = match to {
+            io::SeekFrom::Start(n) => (0, n as i128),
+            io::SeekFrom::End(d) => (self.src.len(), d as i128),
+            io::SeekFrom::Current(d) => (self.pos, d as i128),
+        };
+        let at = u64::try_from(base as i128 + delta)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
+        self.pos = at;
+        Ok(at)
+    }
+}
+
 /// Where an offset ends up after mapping back as far as possible.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootOffset {

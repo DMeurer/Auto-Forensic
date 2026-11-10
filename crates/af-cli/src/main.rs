@@ -30,6 +30,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::usb::Usb,
     &af_windows::mft::Mft,
     &af_core::fs_timeline::Timeline,
+    &af_windows::usn::Journal,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];
