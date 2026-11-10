@@ -18,6 +18,7 @@ pub mod loose;
 pub mod mft;
 pub mod network;
 pub mod plugins;
+pub mod prefetch;
 pub mod profile;
 pub mod registry;
 pub mod registry_timeline;

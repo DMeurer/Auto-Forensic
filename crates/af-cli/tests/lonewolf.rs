@@ -115,6 +115,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::plugins::HiveRootKeys,
             &af_windows::plugins::UserProfiles,
             &af_windows::evtx::EventLogs,
+            &af_windows::prefetch::Prefetch,
             &af_windows::registry_timeline::KeyTimes,
             &af_windows::host::Host,
             &af_windows::network::Network,
@@ -174,18 +175,27 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     // R3: SYSTEM, SOFTWARE, DEFAULT, Amcache and jcloudy's NTUSER.DAT are dirty, and all
     // replay from their logs, so no hive gets a note.
     assert!(!status.contains("note: hive"), "{status}");
-    // E1: every log reads, so no event log gets a note either. R9's only note: the Wi-Fi
-    // adapter's lease times are no calendar times.
+    // E1: every log reads, so no event log gets a note either. R9's note: the Wi-Fi adapter's
+    // lease times are no calendar times. X2's: CHROME.EXE's Prefetch file is only zeros.
     let notes: Vec<&str> = status.lines().filter(|l| l.contains("note:")).collect();
-    assert_eq!(notes.len(), 1, "{status}");
+    assert_eq!(notes.len(), 2, "{status}");
     assert!(
-        notes[0].contains("interface Wi-Fi: DHCP lease times"),
+        notes
+            .iter()
+            .any(|n| n.contains("interface Wi-Fi: DHCP lease times")),
+        "{status}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("CHROME.EXE-CCF9F3F5.pf was never written (only zeros)")),
         "{status}"
     );
     for line in [
         "  windows.evtx: 146",
         "    windows.evtx.events v1: read, 55638 items",
-        "  windows.prefetch: 161 (no plugin reads this kind yet)",
+        "  windows.prefetch: 161",
+        "    windows.prefetch v1: read, 695 items",
         "  windows.hive.log: 22",
         "  windows.hive.system: 1",
         "  windows.hive.ntuser: 4",
@@ -496,5 +506,24 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             681_177,
             "131673695697499774 /Users/jcloudy/Desktop 131041"
         )
+    );
+
+    // X2: 695 run times in 160 Prefetch files, as PECmd's timeline (~/af-stage3/x2). Last run is
+    // the latest stored time: OFFICECLICKTORUN.EXE's first slot holds 12:29:29, which PECmd calls
+    // LastRun, but it also ran at 12:29:30.
+    let (files, runs, office): (i64, i64, String) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM records WHERE kind = 'windows.prefetch.file'), \
+             (SELECT count(*) FROM events WHERE kind = 'windows.prefetch.run'), \
+             (SELECT json_extract_string(attrs, '$.last_run') FROM records \
+              WHERE kind = 'windows.prefetch.file' \
+              AND json_extract_string(attrs, '$.name') = 'OFFICECLICKTORUN.EXE')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (files, runs, office.as_str()),
+        (160, 695, "2018-04-06 12:29:30.3456068 UTC")
     );
 }
