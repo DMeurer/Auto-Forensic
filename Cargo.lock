@@ -50,6 +50,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "af-fmt-prefetch"
+version = "0.0.0"
+dependencies = [
+ "forensic-rs",
+ "frnsc-prefetch",
+ "serde_json",
+]
+
+[[package]]
 name = "af-fmt-regf"
 version = "0.0.0"
 dependencies = [
@@ -1051,6 +1060,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "forensic-rs"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b52fbf6df75a38f126edfb2b6bd8723f53d1af0d6dc09502f608839f0c1ff1a"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "forensicnomicon"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1073,6 +1091,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1af1e5fc4a0cdafce257a88d807f4599b4cf204d6631be87ded01b5c0442d8c5"
 dependencies = [
  "forensicnomicon-core",
+]
+
+[[package]]
+name = "frnsc-prefetch"
+version = "0.13.4"
+source = "git+https://github.com/DMeurer/frnsc-prefetch?rev=d368bbec46fd939b5389c424936923747b78844a#d368bbec46fd939b5389c424936923747b78844a"
+dependencies = [
+ "crc32fast",
+ "forensic-rs",
 ]
 
 [[package]]

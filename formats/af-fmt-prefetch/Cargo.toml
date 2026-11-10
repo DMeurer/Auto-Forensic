@@ -1,0 +1,20 @@
+[package]
+name = "af-fmt-prefetch"
+description = "Windows Prefetch (.pf) files from bytes, on our frnsc-prefetch fork: run count, run times, loaded files and volumes, compressed (Windows 10 and later) or not."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Our fork of frnsc-prefetch (MIT), branch `af` (X0): see formats/README.md.
+frnsc-prefetch = { git = "https://github.com/DMeurer/frnsc-prefetch", rev = "d368bbec46fd939b5389c424936923747b78844a" }
+forensic-rs = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+# The dump example writes JSON lines, as stage 1's pf_dump did.
+serde_json = "1"
