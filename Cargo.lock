@@ -43,6 +43,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "af-fmt-lnk"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "af-fmt-mft"
 version = "0.0.0"
 dependencies = [

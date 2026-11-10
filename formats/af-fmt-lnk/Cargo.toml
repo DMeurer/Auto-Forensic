@@ -1,0 +1,15 @@
+[package]
+name = "af-fmt-lnk"
+description = "Windows shortcut (.lnk) files from bytes, after Microsoft's MS-SHLLINK: target times, size, volume, paths, strings, the target's MFT reference and the link tracker block."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The dump example writes JSON lines.
+serde_json = "1"
