@@ -138,6 +138,7 @@ dependencies = [
  "af-core",
  "af-fmt-evtx",
  "af-fmt-mft",
+ "af-fmt-prefetch",
  "af-fmt-regf",
  "af-fmt-usn",
  "regex",
