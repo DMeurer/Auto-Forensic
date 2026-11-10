@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 # Our fork of frnsc-prefetch (MIT), branch `af` (X0): see formats/README.md.
-frnsc-prefetch = { git = "https://github.com/DMeurer/frnsc-prefetch", rev = "d368bbec46fd939b5389c424936923747b78844a" }
+frnsc-prefetch = { git = "https://github.com/DMeurer/frnsc-prefetch", rev = "661144d96dd5ca080f252d611e6e477d2fe5c223" }
 forensic-rs = { version = "0.13", default-features = false }
 
 [dev-dependencies]

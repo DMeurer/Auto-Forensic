@@ -25,10 +25,9 @@ The change journal (`$UsnJrnl:$J`) on `ntfs-core`'s reader from our fork (the sa
 
 | Patch | Why |
 |---|---|
-| `fix: decode UTF-16 strings without unsafe transmutes` | A `&[u8]` transmuted to `&[u16]` keeps its element count, so names were read up to twice their length, past their slice. The crate now forbids unsafe code |
+| `fix: decode UTF-16 strings without unsafe transmutes` | A `&[u8]` transmuted to `&[u16]` keeps its element count, so names were read up to twice their length, past their slice, under bounds checks that counted characters as bytes. Names are now decoded inside their bytes by their character counts, and the crate forbids unsafe code |
 | `fix: don't print to stdout in the metrics anomaly check` | A leftover debug `println!` wrote file names into the output of whatever used the crate |
 | `fix: cap the decompressed size instead of the file size` | Files over 1,000,000 bytes were refused (`NTOSBOOT-B00DFAAD.pf` on vss has 1.8 MB), while a compressed file's header could reserve up to 4 GiB. Both are capped at 32 MiB |
-| `fix: read UTF-16 names by their character counts` | File names and device paths store character counts; the first fix had read them as bytes and halved every name |
 
-An upstream pull request waits until after X1 (the user's choice). Before it, the fourth fix gets folded into the first, so that no commit halves names; that needs a force push to the fork.
+The branch was rebuilt for an upstream pull request on 2026-11-10 (force push, with the user's OK): a fourth fix for name lengths was folded into the first, so that no commit halves names. The code is unchanged.
 
