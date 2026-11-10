@@ -78,6 +78,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     assert_eq!(file_systems, ["1", "4"]);
     let count = |k: &str| kinds.get(k).map_or(0, Vec::len);
     assert_eq!(count("windows.evtx"), 146);
+    // X3: shortcuts below the user profiles and in the shared Start Menu.
+    assert_eq!(count("windows.lnk"), 198);
     assert_eq!(
         count("windows.hive.log"),
         22,
@@ -116,6 +118,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::plugins::UserProfiles,
             &af_windows::evtx::EventLogs,
             &af_windows::prefetch::Prefetch,
+            &af_windows::lnk::Shortcuts,
             &af_windows::registry_timeline::KeyTimes,
             &af_windows::host::Host,
             &af_windows::network::Network,
@@ -525,5 +528,26 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     assert_eq!(
         (files, runs, office.as_str()),
         (160, 695, "2018-04-06 12:29:30.3456068 UTC")
+    );
+
+    // X3: the 198 shortcuts below the profiles and in the Start Menu, read as LECmd reads them
+    // (~/af-stage3/x3): 298 stored times. jcloudy's Recent/key.lnk points to key.txt on a
+    // removable volume "CloudLog" (its full path is checked in af-fmt-lnk's tests).
+    let (links, times, key): (i64, i64, String) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM records WHERE kind = 'windows.lnk.file'), \
+             (SELECT count(*) FROM events WHERE created_by = 'windows.lnk'), \
+             (SELECT concat_ws(' ', json_extract_string(attrs, '$.target') LIKE '%key.txt', \
+                 json_extract_string(attrs, '$.drive_type'), \
+                 json_extract_string(attrs, '$.volume_serial'), \
+                 json_extract_string(attrs, '$.volume_label')) \
+              FROM records WHERE kind = 'windows.lnk.file' AND locator LIKE '%Recent%2Fkey.lnk')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (links, times, key.as_str()),
+        (198, 298, "true removable 4C36F4AC CloudLog")
     );
 }

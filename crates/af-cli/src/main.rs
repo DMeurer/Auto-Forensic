@@ -21,6 +21,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::plugins::UserProfiles,
     &af_windows::evtx::EventLogs,
     &af_windows::prefetch::Prefetch,
+    &af_windows::lnk::Shortcuts,
     &af_windows::registry_timeline::KeyTimes,
     &af_windows::host::Host,
     &af_windows::network::Network,

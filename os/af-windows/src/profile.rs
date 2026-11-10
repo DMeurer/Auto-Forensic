@@ -160,6 +160,19 @@ impl OsProfile for WindowsProfile {
                 "windows.hive.ntuser",
             );
         }
+        // X3, the user's choice: shortcuts in the places users make and use them, anywhere
+        // below each profile folder and in the shared Start Menu.
+        let mut tops: Vec<ViewPath> = vol
+            .list(&users)
+            .into_iter()
+            .map(|u| users.join(u))
+            .collect();
+        tops.push(MemVolume::path("ProgramData/Microsoft/Windows/Start Menu"));
+        for top in tops {
+            links_below(vol, top, 0, &mut |p| {
+                found.push((vol.id(), p, kind("windows.lnk")))
+            });
+        }
         // Listed names exist, so they skip the lookup.
         for (dir, ext, k) in [
             ("Windows/System32/winevt/Logs", ".evtx", "windows.evtx"),
@@ -233,6 +246,31 @@ impl OsProfile for WindowsProfile {
                 .then(|| "the SYSTEM hive has no computer name in its current control set".into()),
             label: name,
             facts,
+        }
+    }
+}
+
+/// Folder depth past which a walk stops: deeper means a loop (a junction a folder copy followed).
+const MAX_WALK_DEPTH: usize = 32;
+
+/// Every `.lnk` file below `dir`, any letter case. A volume lists a file as an empty folder,
+/// so every other name is tried as one.
+fn links_below(
+    vol: &dyn VolumeProbe,
+    dir: ViewPath,
+    depth: usize,
+    found: &mut dyn FnMut(ViewPath),
+) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
+    for name in vol.list(&dir) {
+        let is_link = name.display().to_lowercase().ends_with(".lnk");
+        let path = dir.join(name);
+        if is_link {
+            found(path);
+        } else {
+            links_below(vol, path, depth + 1, found);
         }
     }
 }
@@ -342,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn indexes_hives_event_logs_and_prefetch() {
+    fn indexes_hives_event_logs_prefetch_and_shortcuts() {
         let os = MemVolume::new(
             1,
             &[
@@ -357,8 +395,13 @@ mod tests {
                 "Users/admin/NTUSER.DAT",
                 "Users/admin/ntuser.dat.LOG2",
                 "Users/admin/AppData/Local/Microsoft/Windows/UsrClass.dat",
-                "Users/Public/Desktop",
+                "Users/Public/Desktop/Edge.LNK",
                 "Windows/ServiceProfiles/LocalService/NTUSER.DAT",
+                "Users/admin/AppData/Roaming/Microsoft/Windows/Recent/key.lnk",
+                "ProgramData/Microsoft/Windows/Start Menu/Programs/Paint.lnk",
+                // Not where users make or use shortcuts (X3, the user's choice).
+                "Windows/WinSxS/amd64_explorer-shortcuts/Paint.lnk",
+                "Windows/ServiceProfiles/LocalService/Desktop/x.lnk",
             ],
         );
         let (sid, vid) = counters();
@@ -395,6 +438,15 @@ mod tests {
             (
                 "windows.hive.usrclass",
                 "Users/admin/AppData/Local/Microsoft/Windows/UsrClass.dat",
+            ),
+            (
+                "windows.lnk",
+                "ProgramData/Microsoft/Windows/Start Menu/Programs/Paint.lnk",
+            ),
+            ("windows.lnk", "Users/Public/Desktop/Edge.LNK"),
+            (
+                "windows.lnk",
+                "Users/admin/AppData/Roaming/Microsoft/Windows/Recent/key.lnk",
             ),
             ("windows.prefetch", "Windows/Prefetch/CMD.EXE-0BD30981.pf"),
         ];

@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 af-core.workspace = true
 af-fmt-evtx.workspace = true
+af-fmt-lnk.workspace = true
 af-fmt-mft.workspace = true
 af-fmt-prefetch.workspace = true
 af-fmt-usn.workspace = true

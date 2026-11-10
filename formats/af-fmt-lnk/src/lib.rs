@@ -92,7 +92,8 @@ const UUID_TO_FILETIME: u64 = 5_748_192_000_000_000;
 /// Reads a shortcut file.
 pub fn read(data: &[u8]) -> Result<Link, String> {
     let b = Bytes(data);
-    if b.u32(0)? as usize != HEADER_SIZE || b.get(4, 16)? != LINK_CLSID {
+    // Too short for a header is no shortcut either.
+    if b.u32(0).ok() != Some(HEADER_SIZE as u32) || b.get(4, 16).ok() != Some(&LINK_CLSID[..]) {
         return Err("not a shortcut: no ShellLinkHeader".into());
     }
     let flags = b.u32(0x14)?;

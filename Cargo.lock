@@ -144,6 +144,7 @@ version = "0.0.0"
 dependencies = [
  "af-core",
  "af-fmt-evtx",
+ "af-fmt-lnk",
  "af-fmt-mft",
  "af-fmt-prefetch",
  "af-fmt-regf",
