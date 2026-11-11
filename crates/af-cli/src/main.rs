@@ -24,6 +24,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::lnk::Shortcuts,
     &af_windows::recyclebin::RecycleBin,
     &af_windows::tasks::Tasks,
+    &af_windows::browser::BrowserHistory,
     &af_windows::registry_timeline::KeyTimes,
     &af_windows::host::Host,
     &af_windows::network::Network,

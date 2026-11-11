@@ -11,6 +11,7 @@
 
 pub mod autoruns;
 pub mod bam;
+pub mod browser;
 pub mod evtx;
 pub mod evtx_map;
 pub mod host;

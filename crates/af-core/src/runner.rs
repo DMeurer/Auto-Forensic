@@ -442,9 +442,14 @@ pub fn check_order_independence(
     Ok(())
 }
 
-/// `not_acquired` if a required input or a needed capability is missing.
+/// `not_acquired` if a required input or a needed capability is missing, or if a plugin with
+/// only optional inputs and no capability has none of them (B1: a browser plugin on a system
+/// without browsers).
 fn missing_requirement(m: &Manifest, t: &Target<'_>) -> Option<Outcome> {
-    let input_missing = m.required_inputs().any(|i| !t.available.contains(&i.kind));
+    let only_optional = !m.inputs.is_empty() && m.required_inputs().next().is_none();
+    let none_there = !m.inputs.iter().any(|i| t.available.contains(&i.kind));
+    let input_missing = m.required_inputs().any(|i| !t.available.contains(&i.kind))
+        || (only_optional && m.needs.is_empty() && none_there);
     let cap_missing = m
         .needs
         .iter()
@@ -620,11 +625,16 @@ mod tests {
         let win_only = TestPlugin::new("test.win", vec![Family::Windows], &[], &[]);
         let needs_hive = TestPlugin::new("test.hive", vec![], &["windows.hive.system"], &[]);
         let needs_reg = TestPlugin::new("test.reg", vec![], &[], &[CAPABILITY_REGISTRY]);
+        // Only optional inputs and no capability: it needs one of them.
+        let mut any_of = TestPlugin::new("test.any", vec![], &["a.one", "a.two"], &[]);
+        for i in &mut any_of.manifest.inputs {
+            i.required = false;
+        }
         let stick = system(9, Family::None);
         let mut sink = Trace::default();
         let mut log = OutcomeLog::new();
         run(
-            &[&win_only, &needs_hive, &needs_reg],
+            &[&win_only, &needs_hive, &needs_reg, &any_of],
             &[target(&stick, &[])],
             &mut sink,
             &mut log,
@@ -634,7 +644,7 @@ mod tests {
         assert!(win_only.calls.lock().unwrap().is_empty());
         assert!(log.get(&k("test.win"), SystemId(9)).is_none());
         // Missing input or capability: recorded as not acquired, not run.
-        for id in ["test.hive", "test.reg"] {
+        for id in ["test.hive", "test.reg", "test.any"] {
             assert_eq!(
                 log.get(&k(id), SystemId(9)).unwrap().outcome,
                 Outcome::NotAcquired

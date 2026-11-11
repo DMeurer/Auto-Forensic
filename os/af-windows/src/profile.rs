@@ -161,17 +161,29 @@ impl OsProfile for WindowsProfile {
             );
         }
         // X3, the user's choice: shortcuts in the places users make and use them, anywhere
-        // below each profile folder and in the shared Start Menu.
+        // below each profile folder and in the shared Start Menu. B1: browser history
+        // databases there too, with their journals and WALs (for coverage).
         let mut tops: Vec<ViewPath> = vol
             .list(&users)
             .into_iter()
             .map(|u| users.join(u))
             .collect();
         tops.push(MemVolume::path("ProgramData/Microsoft/Windows/Start Menu"));
-        let is_link = |n: &str| n.to_lowercase().ends_with(".lnk");
+        let user_file = |n: &str| match n.to_lowercase().as_str() {
+            n if n.ends_with(".lnk") => Some("windows.lnk"),
+            "history" => Some("browser.chromium.history"),
+            "places.sqlite" => Some("browser.firefox.places"),
+            "history-journal" | "history-wal" | "places.sqlite-wal" | "places.sqlite-journal" => {
+                Some("browser.sqlite.journal")
+            }
+            _ => None,
+        };
         for top in tops {
-            files_below(vol, top, 0, &is_link, &mut |p| {
-                found.push((vol.id(), p, kind("windows.lnk")))
+            files_below(vol, top, 0, &|n| user_file(n).is_some(), &mut |p| {
+                let name = p.names().last().map(|n| n.display()).unwrap_or_default();
+                if let Some(k) = user_file(&name) {
+                    found.push((vol.id(), p, kind(k)));
+                }
             });
         }
         // X4: scheduled tasks, one XML file per task, in folders by task path.
@@ -430,6 +442,10 @@ mod tests {
                 "$Recycle.Bin/S-1-5-21-1-1001/desktop.ini",
                 "Windows/System32/Tasks/Microsoft/Windows/Defrag/ScheduledDefrag",
                 "Windows/System32/Tasks/Updater",
+                "Users/admin/AppData/Local/Google/Chrome/User Data/Default/History",
+                "Users/admin/AppData/Local/Google/Chrome/User Data/Default/History-journal",
+                "Users/admin/Desktop/Tor Browser/Browser/TorBrowser/Data/Browser/profile.default/places.sqlite",
+                "Users/admin/Documents/History.txt",
             ],
         );
         let (sid, vid) = counters();
@@ -448,6 +464,18 @@ mod tests {
             .collect();
         got.sort();
         let want = [
+            (
+                "browser.chromium.history",
+                "Users/admin/AppData/Local/Google/Chrome/User Data/Default/History",
+            ),
+            (
+                "browser.firefox.places",
+                "Users/admin/Desktop/Tor Browser/Browser/TorBrowser/Data/Browser/profile.default/places.sqlite",
+            ),
+            (
+                "browser.sqlite.journal",
+                "Users/admin/AppData/Local/Google/Chrome/User Data/Default/History-journal",
+            ),
             ("windows.evtx", "Windows/System32/winevt/Logs/Security.evtx"),
             ("windows.evtx", "Windows/System32/winevt/Logs/System.EVTX"),
             (

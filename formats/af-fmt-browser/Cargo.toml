@@ -1,0 +1,20 @@
+[package]
+name = "af-fmt-browser"
+description = "Browser history from bytes: Chromium History (visits, downloads, keyword searches) and Firefox places.sqlite (visits, bookmarks), read with SQLite from memory, and gaps in their row IDs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# SQLite itself, built in (the user's choice); `serialize` loads a database from bytes, so the
+# evidence file is never opened.
+rusqlite = { version = "0.37", features = ["bundled", "serialize"] }
+
+[dev-dependencies]
+# The dump example writes JSON lines.
+serde_json = "1"

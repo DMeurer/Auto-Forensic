@@ -17,6 +17,7 @@ af-host = { path = "crates/af-host" }
 af-store = { path = "crates/af-store" }
 af-windows = { path = "os/af-windows" }
 af-fmt-regf = { path = "formats/af-fmt-regf" }
+af-fmt-browser = { path = "formats/af-fmt-browser" }
 af-fmt-evtx = { path = "formats/af-fmt-evtx" }
 af-fmt-lnk = { path = "formats/af-fmt-lnk" }
 af-fmt-mft = { path = "formats/af-fmt-mft" }
