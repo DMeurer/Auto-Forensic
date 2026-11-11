@@ -32,6 +32,53 @@ impl Store {
         Ok(n as u64)
     }
 
+    /// Deletes the links and groups `plugin` made, before it makes them again. With `system`
+    /// (a plugin extracting again for that system), only those anchored on its own events and
+    /// facts there: a link starting at one, a group with one as member. Without, all of them
+    /// (a plugin that rebuilds its links and groups every run, in Index or Correlate). Run it
+    /// before the plugin's events and facts are cleared.
+    pub fn clear_links_and_groups_of(
+        &mut self,
+        plugin: &str,
+        system: Option<u128>,
+    ) -> Result<(), Error> {
+        let mine = "(SELECT id FROM events WHERE created_by = $1 AND system = $2 \
+                     UNION ALL SELECT id FROM facts WHERE created_by = $1 AND system = $2)";
+        let (links, groups) = match system {
+            Some(_) => (
+                format!(
+                    "DELETE FROM links WHERE created_by = $1 \
+                     AND from_kind IN ('event', 'fact') AND from_id IN {mine}"
+                ),
+                format!(
+                    "SELECT DISTINCT m.grp FROM group_members m JOIN groups g ON g.id = m.grp \
+                     WHERE g.created_by = $1 AND m.member_kind IN ('event', 'fact') \
+                     AND m.member_id IN {mine}"
+                ),
+            ),
+            None => (
+                "DELETE FROM links WHERE created_by = $1 AND $2::UHUGEINT IS NULL".to_string(),
+                "SELECT id FROM groups WHERE created_by = $1 AND $2::UHUGEINT IS NULL".to_string(),
+            ),
+        };
+        let tx = self.conn.transaction()?;
+        tx.execute(&links, params![plugin, system])?;
+        // The groups first, as deleting their members changes what the query finds.
+        let doomed: Vec<u128> = tx
+            .prepare(&groups)?
+            .query_map(params![plugin, system], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for g in doomed {
+            tx.execute(
+                "DELETE FROM group_members WHERE grp = ? OR (member_kind = 'group' AND member_id = ?)",
+                params![g, g],
+            )?;
+            tx.execute("DELETE FROM groups WHERE id = ?", params![g])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Deletes every link a plugin made. Links the analyst made stay. Returns how many went.
     pub fn clear_derived_links(&mut self) -> Result<u64, Error> {
         let n = self
@@ -223,5 +270,43 @@ mod tests {
         assert_eq!(left, ["test.b"]);
         // Another system's output of the same plugin stays too.
         assert_eq!(store.clear_plugin_output("test.b", 8).unwrap(), 0);
+    }
+
+    /// B2, found while building it: an Extract plugin's links and groups stay when another
+    /// plugin extracts, go with its own re-extraction for that system only, and an every-run
+    /// plugin's go each run. The analyst's stay.
+    #[test]
+    fn links_and_groups_follow_their_plugins_output() {
+        use af_core::ids::GroupId;
+        let mut store = Store::in_memory(256).unwrap();
+        let on = |id: u128, system: u128| EventRow {
+            system,
+            ..event(id, "test.usn")
+        };
+        store.insert_events(&[on(1, 7), on(2, 8)]).unwrap();
+        let (one, two) = (Endpoint::Event(EventId(1)), Endpoint::Event(EventId(2)));
+        store
+            .add_link(10, "test.file", &one, &two, "test.usn")
+            .unwrap();
+        store
+            .add_link(20, "test.file", &two, &one, "test.usn")
+            .unwrap();
+        store.add_link(30, "user.note", &one, &two, USER).unwrap();
+        let kind = af_core::names::Kind::new("test.session").unwrap();
+        store
+            .add_group(GroupId(40), &kind, "same site", "test.usn")
+            .unwrap();
+        store.add_member(GroupId(40), &one, "test.usn").unwrap();
+        // test.usn extracts again for system 7 only.
+        store
+            .clear_links_and_groups_of("test.usn", Some(7))
+            .unwrap();
+        let ids: Vec<u128> = store.links().unwrap().into_iter().map(|(i, _)| i).collect();
+        assert_eq!(ids, [20, 30]);
+        assert!(store.groups_of(&one).unwrap().is_empty());
+        // A plugin that rebuilds every run loses all of its own.
+        store.clear_links_and_groups_of("test.usn", None).unwrap();
+        let ids: Vec<u128> = store.links().unwrap().into_iter().map(|(i, _)| i).collect();
+        assert_eq!(ids, [30]);
     }
 }

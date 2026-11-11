@@ -121,6 +121,17 @@ pub struct NewLink {
     pub to: Endpoint,
 }
 
+/// A group a plugin produced (B2): members that belong together, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewGroup {
+    pub id: crate::ids::GroupId,
+    pub kind: Kind,
+    /// Why the members belong together; a group always says.
+    pub reason: String,
+    /// Events, facts or groups; never files.
+    pub members: Vec<Endpoint>,
+}
+
 /// Receives what plugins produce. The project's spool (C0b) is the real one; `emit` is the
 /// plain form tests use, and the typed methods fall back to it.
 pub trait Sink {
@@ -137,6 +148,10 @@ pub trait Sink {
     fn link(&mut self, plugin: &Kind, l: NewLink) {
         let kind = l.kind.clone();
         self.emit(plugin, &kind, format!("{l:?}"));
+    }
+    fn group(&mut self, plugin: &Kind, g: NewGroup) {
+        let kind = g.kind.clone();
+        self.emit(plugin, &kind, format!("{g:?}"));
     }
     fn record(&mut self, plugin: &Kind, _system: SystemId, r: NewRecord) {
         let kind = r.kind.clone();

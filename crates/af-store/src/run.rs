@@ -19,7 +19,10 @@ use af_core::ids::SourceId;
 use af_core::ids::SystemId;
 use af_core::names::Kind;
 use af_core::path::{NameKind, ViewPath};
-use af_core::runner::{NewEvent, NewFact, NewLink, NewRecord, Opener, Plugin, Sink, Target, run};
+use af_core::plugin::Phase;
+use af_core::runner::{
+    NewEvent, NewFact, NewGroup, NewLink, NewRecord, Opener, Plugin, Sink, Target, run,
+};
 use af_core::system::{Family, System, VolumeId};
 use af_fs_archive::Archive;
 use af_fs_ntfs::Ntfs;
@@ -47,6 +50,7 @@ struct SpoolSink {
     events: Vec<EventRow>,
     facts: Vec<FactRow>,
     links: Vec<(NewLink, String)>,
+    groups: Vec<(NewGroup, String)>,
     records: Vec<RecordRow>,
     /// (system, note, plugin)
     notes: Vec<(SystemId, String, String)>,
@@ -84,6 +88,9 @@ impl Sink for SpoolSink {
     }
     fn link(&mut self, plugin: &Kind, l: NewLink) {
         self.links.push((l, plugin.as_str().into()));
+    }
+    fn group(&mut self, plugin: &Kind, g: NewGroup) {
+        self.groups.push((g, plugin.as_str().into()));
     }
     fn record(&mut self, plugin: &Kind, system: SystemId, r: NewRecord) {
         self.records.push(RecordRow {
@@ -356,6 +363,7 @@ pub fn run_project(
         events: vec![],
         facts: vec![],
         links: vec![],
+        groups: vec![],
         records: vec![],
         notes: vec![],
     };
@@ -376,6 +384,16 @@ pub fn run_project(
         for (plugin, notes) in by_plugin {
             spool.save_system_notes(plugin, &notes)?;
         }
+        for (g, by) in &sink.groups {
+            spool
+                .add_group(g.id, &g.kind, &g.reason, by)
+                .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
+            for m in &g.members {
+                spool
+                    .add_member(g.id, m, by)
+                    .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
+            }
+        }
         spool.add_links(
             sink.links
                 .iter()
@@ -385,14 +403,26 @@ pub fn run_project(
 
     // 2. Write the project, briefly.
     let mut writer = Project::open(dir)?;
+    // Links and groups made in Index or Correlate are rebuilt every run; those made in Extract
+    // are output like events, replaced when their plugin extracts again for that system.
+    for p in plugins {
+        let phases = &p.manifest().phases;
+        if phases.contains(&Phase::Index) || phases.contains(&Phase::Correlate) {
+            writer
+                .store
+                .clear_links_and_groups_of(p.manifest().id.as_str(), None)?;
+        }
+    }
     for (plugin, system) in &extracted {
+        writer
+            .store
+            .clear_links_and_groups_of(plugin.as_str(), Some(system.0))?;
         writer
             .store
             .clear_plugin_output(plugin.as_str(), system.0)?;
     }
-    writer.store.clear_derived_links()?;
-    writer.store.clear_derived_groups()?;
     let events_loaded = writer.store.load_spools(&[&spool_path])?;
+    writer.store.refresh_group_ranges()?;
     writer.store.save_run_log(&runs)?;
     writer.store.save_outcomes(&outcomes)?;
     let notes: Vec<_> = systems

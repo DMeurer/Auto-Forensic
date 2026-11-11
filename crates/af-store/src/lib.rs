@@ -402,7 +402,15 @@ impl Store {
         };
         let result = (|| {
             let tx = self.conn.transaction()?;
-            for table in ["records", "entities", "facts", "links", "system_notes"] {
+            for table in [
+                "records",
+                "entities",
+                "facts",
+                "links",
+                "groups",
+                "group_members",
+                "system_notes",
+            ] {
                 tx.execute_batch(&format!("INSERT INTO {table} {};", union(table)))?;
             }
             let n = tx.execute(
