@@ -144,12 +144,21 @@ fn project_canary() {
         "3 root keys per hive, linked to the hive's time"
     );
 
-    // The analyst tags an event.
+    // The analyst tags an event and links two of their own (L2: both survive the rebuild).
     let tagged = {
         let mut s = Store::open(&db, 256).unwrap();
-        let id = s.events().unwrap()[0].id;
+        let events = s.events().unwrap();
+        let id = events[0].id;
         s.add_tag(&Endpoint::Event(EventId(id)), "suspicious")
             .unwrap();
+        s.add_link(
+            7,
+            "user.note",
+            &Endpoint::Event(EventId(events[1].id)),
+            &Endpoint::Event(EventId(id)),
+            af_store::rebuild::USER,
+        )
+        .unwrap();
         id
     };
 
@@ -175,7 +184,12 @@ fn project_canary() {
     assert_eq!(events.len(), 15, "and R7's key times: 4 keys in each hive");
     drop(s);
     let links_after = links(&db);
-    assert_eq!(links_after.len(), 9, "links rebuilt for all three hives");
+    assert_eq!(
+        links_after.len(),
+        10,
+        "links rebuilt for all three hives, and the analyst's kept"
+    );
+    assert!(links_after.contains(&(7, af_store::rebuild::USER.to_string())));
     for l in &links_before {
         assert!(links_after.contains(l), "rebuilt links keep their IDs");
     }
