@@ -26,6 +26,7 @@ pub mod recyclebin;
 pub mod registry;
 pub mod registry_timeline;
 pub mod sam;
+pub mod same_file;
 pub mod tasks;
 pub mod usb;
 pub mod usn;

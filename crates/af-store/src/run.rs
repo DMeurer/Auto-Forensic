@@ -21,7 +21,7 @@ use af_core::names::Kind;
 use af_core::path::{NameKind, ViewPath};
 use af_core::plugin::Phase;
 use af_core::runner::{
-    NewEvent, NewFact, NewGroup, NewLink, NewRecord, Opener, Plugin, Sink, Target, run,
+    NewEvent, NewFact, NewGroup, NewLink, NewRecord, Opener, Plugin, Run, Sink, Target,
 };
 use af_core::system::{Family, System, VolumeId};
 use af_fs_archive::Archive;
@@ -46,6 +46,7 @@ pub struct RunSummary {
 }
 
 /// Collects plugin output in a spool store.
+#[derive(Default)]
 struct SpoolSink {
     events: Vec<EventRow>,
     facts: Vec<FactRow>,
@@ -359,43 +360,12 @@ pub fn run_project(
             Target::new(s, caps, artifacts, Some(&opener))
         })
         .collect();
-    let mut sink = SpoolSink {
-        events: vec![],
-        facts: vec![],
-        links: vec![],
-        groups: vec![],
-        records: vec![],
-        notes: vec![],
-    };
-    let extracted = run(plugins, &targets, &mut sink, &mut outcomes, &mut runs);
+    let mut sink = SpoolSink::default();
+    let mut r = Run::new(plugins, &targets);
+    r.phase(Phase::Index, &targets, None, &mut sink, &mut runs);
+    r.phase(Phase::Extract, &targets, None, &mut sink, &mut runs);
     let spool_path = run_dir.path().join("spool.duckdb");
-    {
-        let mut spool = Store::open(&spool_path, 1024)?;
-        spool.insert_events(&sink.events)?;
-        spool.insert_facts(&sink.facts)?;
-        spool.insert_records(&sink.records)?;
-        let mut by_plugin: HashMap<&str, Vec<(SystemId, String)>> = HashMap::new();
-        for (system, note, plugin) in &sink.notes {
-            by_plugin
-                .entry(plugin)
-                .or_default()
-                .push((*system, note.clone()));
-        }
-        for (plugin, notes) in by_plugin {
-            spool.save_system_notes(plugin, &notes)?;
-        }
-        for (g, by) in &sink.groups {
-            spool
-                .add_group(g.id, &g.kind, &g.reason, by)
-                .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-            for m in &g.members {
-                spool
-                    .add_member(g.id, m, by)
-                    .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-            }
-        }
-        spool.add_links(&sink.links)?;
-    }
+    save(&mut Store::open(&spool_path, 1024)?, &sink)?;
 
     // 2. Write the project, briefly.
     let mut writer = Project::open(dir)?;
@@ -409,7 +379,7 @@ pub fn run_project(
                 .clear_links_and_groups_of(p.manifest().id.as_str(), None)?;
         }
     }
-    for (plugin, system) in &extracted {
+    for (plugin, system) in r.extracted() {
         writer
             .store
             .clear_links_and_groups_of(plugin.as_str(), Some(system.0))?;
@@ -417,7 +387,21 @@ pub fn run_project(
             .store
             .clear_plugin_output(plugin.as_str(), system.0)?;
     }
-    let events_loaded = writer.store.load_spools(&[&spool_path])?;
+    let mut events_loaded = writer.store.load_spools(&[&spool_path])?;
+    // 3. Correlate reads the loaded project (L5), so it runs while the project is open for
+    // writing. Its output goes through a spool of its own.
+    let mut correlated = SpoolSink::default();
+    r.phase(
+        Phase::Correlate,
+        &targets,
+        Some(&writer.store),
+        &mut correlated,
+        &mut runs,
+    );
+    let correlate_path = run_dir.path().join("correlate.duckdb");
+    save(&mut Store::open(&correlate_path, 1024)?, &correlated)?;
+    events_loaded += writer.store.load_spools(&[&correlate_path])?;
+    let extracted = r.finish(&targets, &mut outcomes);
     writer.store.refresh_group_ranges()?;
     writer.store.save_run_log(&runs)?;
     writer.store.save_outcomes(&outcomes)?;
@@ -437,6 +421,35 @@ pub fn run_project(
         extracted: extracted.len(),
         events_loaded,
     })
+}
+
+/// Writes what plugins produced into a fresh spool store.
+fn save(store: &mut Store, sink: &SpoolSink) -> Result<(), ProjectError> {
+    store.insert_events(&sink.events)?;
+    store.insert_facts(&sink.facts)?;
+    store.insert_records(&sink.records)?;
+    let mut by_plugin: HashMap<&str, Vec<(SystemId, String)>> = HashMap::new();
+    for (system, note, plugin) in &sink.notes {
+        by_plugin
+            .entry(plugin)
+            .or_default()
+            .push((*system, note.clone()));
+    }
+    for (plugin, notes) in by_plugin {
+        store.save_system_notes(plugin, &notes)?;
+    }
+    for (g, by) in &sink.groups {
+        store
+            .add_group(g.id, &g.kind, &g.reason, by)
+            .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
+        for m in &g.members {
+            store
+                .add_member(g.id, m, by)
+                .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
+        }
+    }
+    store.add_links(&sink.links)?;
+    Ok(())
 }
 
 /// A path below a folder source as the locator step `fs.path` holds it.
@@ -540,6 +553,20 @@ mod tests {
         }
     }
 
+    /// Counts, in Correlate, the events of record 1 the project holds (L5).
+    struct Seen(Manifest, AtomicUsize);
+
+    impl Plugin for Seen {
+        fn manifest(&self) -> &Manifest {
+            &self.0
+        }
+        fn correlate(&self, ctx: &mut RunContext<'_>) -> Outcome {
+            let n = ctx.stored.map_or(0, |s| s.events_of(&[1]).unwrap().len());
+            self.1.store(n, Ordering::SeqCst);
+            Outcome::Ok(0)
+        }
+    }
+
     #[test]
     fn a_test_plugins_events_land_in_the_project_and_a_second_run_extracts_nothing() {
         let parent = std::env::temp_dir().join(format!("af-run-{}", std::process::id()));
@@ -576,8 +603,23 @@ mod tests {
             },
             extracts: AtomicUsize::new(0),
         };
-        let first = run_project(&dir, &[&plugin], &[]).unwrap();
+        let seen = Seen(
+            Manifest {
+                id: Kind::new("test.seen").unwrap(),
+                phases: vec![Phase::Correlate],
+                inputs: vec![],
+                produces: vec![],
+                ..plugin.manifest.clone()
+            },
+            AtomicUsize::new(0),
+        );
+        let first = run_project(&dir, &[&plugin, &seen], &[]).unwrap();
         assert_eq!((first.extracted, first.events_loaded), (1, 2));
+        assert_eq!(
+            seen.1.load(Ordering::SeqCst),
+            2,
+            "Correlate sees this run's events"
+        );
         let p = Project::open_read_only(&dir, std::time::Duration::from_secs(1)).unwrap();
         let events = p.store.events().unwrap();
         assert_eq!(events.len(), 2);
@@ -593,8 +635,10 @@ mod tests {
         );
         drop(p);
 
-        let second = run_project(&dir, &[&plugin], &[]).unwrap();
+        seen.1.store(0, Ordering::SeqCst);
+        let second = run_project(&dir, &[&plugin, &seen], &[]).unwrap();
         assert_eq!((second.extracted, second.events_loaded), (0, 0));
+        assert_eq!(seen.1.load(Ordering::SeqCst), 2, "and the kept ones");
         assert_eq!(
             plugin.extracts.load(Ordering::SeqCst),
             1,

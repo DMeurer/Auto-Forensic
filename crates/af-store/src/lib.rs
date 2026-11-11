@@ -603,6 +603,52 @@ fn event_row(r: &duckdb::Row<'_>) -> duckdb::Result<EventRow> {
     })
 }
 
+/// Correlate reads the project through this (L5).
+impl af_core::runner::Stored for Store {
+    fn records(
+        &self,
+        system: SystemId,
+        kind: &Kind,
+    ) -> std::io::Result<Vec<af_core::runner::StoredRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, locator, attrs FROM records WHERE system = ? AND kind = ? ORDER BY id",
+            )
+            .map_err(std::io::Error::other)?;
+        stmt.query_map(params![system.0, kind.as_str()], |r| {
+            Ok(af_core::runner::StoredRecord {
+                id: r.get(0)?,
+                locator: r.get(1)?,
+                attrs: r.get(2)?,
+            })
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(std::io::Error::other)
+    }
+
+    fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<(u128, af_core::ids::EventId)>> {
+        // One text parameter: IDs above i128 don't fit a plain integer literal.
+        let ids = records
+            .iter()
+            .map(u128::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT record, id FROM events WHERE record IN \
+                 (SELECT unnest(string_split(?, ','))::UHUGEINT) ORDER BY record, ts, id",
+            )
+            .map_err(std::io::Error::other)?;
+        stmt.query_map(params![ids], |r| {
+            Ok((r.get(0)?, af_core::ids::EventId(r.get(1)?)))
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(std::io::Error::other)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,6 +725,51 @@ mod tests {
             seq_no: None,
             created_by: "test.plugin".into(),
         }
+    }
+
+    /// L5: Correlate reads records by kind and system, and their events in time order, IDs
+    /// above i128 included.
+    #[test]
+    fn correlate_reads_records_and_their_events() {
+        use af_core::runner::Stored;
+        let mut store = Store::in_memory(256).unwrap();
+        let big = u128::MAX - 1;
+        let record = |id, system, kind: &str| RecordRow {
+            id,
+            source: 1,
+            system,
+            kind: kind.into(),
+            locator: format!("loc{id}"),
+            attrs: Some("{}".into()),
+            created_by: "test.plugin".into(),
+        };
+        store
+            .insert_records(&[
+                record(big, 1, "fs.entry"),
+                record(7, 1, "fs.entry"),
+                record(8, 1, "windows.lnk.file"),
+                record(9, 2, "fs.entry"),
+            ])
+            .unwrap();
+        let ev = |id, record, ts| EventRow {
+            record,
+            ..event(id, Some(ts))
+        };
+        store
+            .insert_events(&[ev(1, big, 30), ev(2, big, 10), ev(3, 7, 20), ev(4, 8, 5)])
+            .unwrap();
+        let got = store
+            .records(SystemId(1), &Kind::new("fs.entry").unwrap())
+            .unwrap();
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.id, r.locator.as_str()))
+                .collect::<Vec<_>>(),
+            [(7, "loc7"), (big, &*format!("loc{big}"))]
+        );
+        let events = store.events_of(&[big, 7]).unwrap();
+        let ids: Vec<(u128, u128)> = events.iter().map(|(r, e)| (*r, e.0)).collect();
+        assert_eq!(ids, [(7, 3), (big, 2), (big, 1)]);
     }
 
     /// Whether the events table is stored in time order: `rowid` is the physical position.

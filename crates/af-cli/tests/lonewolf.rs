@@ -136,6 +136,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::usb::Usb,
             &af_core::fs_timeline::Timeline,
             &af_windows::usn::Journal,
+            &af_windows::same_file::SameFile,
         ],
         &profiles,
     )
@@ -557,6 +558,37 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         (links, times, key.as_str()),
         (198, 298, "true removable 4C36F4AC CloudLog")
     );
+
+    // L5: one group per file with its $MFT entry, shortcuts and Prefetch files. 36 files have
+    // shortcuts (LECmd's 404 shortcuts reach 37 files on this volume), 84 programs Prefetch
+    // files, 8 both. A shortcut follows its file by record into the Recycle Bin.
+    let same: (i64, i64, i64, i64) = db
+        .query_row(
+            "SELECT count(*), count(*) FILTER (WHERE reason LIKE '%shortcut%'), \
+             count(*) FILTER (WHERE reason LIKE '%Prefetch%'), \
+             count(*) FILTER (WHERE reason LIKE '%shortcut%' AND reason LIKE '%Prefetch%') \
+             FROM groups WHERE kind = 'windows.same_file'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(same, (112, 36, 84, 8));
+    let reasons: Vec<String> = db
+        .prepare("SELECT reason FROM groups WHERE kind = 'windows.same_file' ORDER BY 1")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for want in [
+        "48 events of /Program Files (x86)/Google/Chrome/Application/chrome.exe in $MFT, \
+         3 shortcuts and 5 Prefetch files",
+        "12 events of /Users/jcloudy/Desktop/The Cloudy Manifesto.docx in $MFT and a shortcut",
+        "12 events of /$Recycle.Bin/S-1-5-21-2734969515-1644526556-1039763013-1001/$RYRY5PT.jpg \
+         in $MFT and a shortcut",
+    ] {
+        assert!(reasons.iter().any(|r| r == want), "{want} in {reasons:#?}");
+    }
 
     // X4: the Recycle Bin, as RBCmd reads it (~/af-stage3/x4): five items jcloudy deleted, all
     // still recoverable (their $R files and folders are there).

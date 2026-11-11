@@ -46,6 +46,27 @@ pub struct RunContext<'a> {
     pub opener: Option<&'a dyn Opener>,
     /// Where the plugin puts what it produces.
     pub sink: &'a mut dyn Sink,
+    /// What the project holds, Extract's output of this run included. Only Correlate gets it
+    /// (L5), because the store loads a run's output after Extract.
+    pub stored: Option<&'a dyn Stored>,
+}
+
+/// A record the project holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRecord {
+    pub id: u128,
+    pub locator: String,
+    /// The row's content as JSON text.
+    pub attrs: Option<String>,
+}
+
+/// Read access to the project for Correlate: records by kind, and their events.
+pub trait Stored {
+    /// Every record of `kind` on `system`.
+    fn records(&self, system: SystemId, kind: &Kind) -> std::io::Result<Vec<StoredRecord>>;
+
+    /// The events of these records as (record, event), by time within a record.
+    fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<(u128, EventId)>>;
 }
 
 /// Opens the bytes of an artifact.
@@ -309,31 +330,62 @@ pub fn run(
     log: &mut OutcomeLog,
     runs: &mut RunLog,
 ) -> Vec<(Kind, SystemId)> {
-    let mut extracted: Vec<(Kind, SystemId)> = Vec::new();
-    // Outcomes so far, by (plugin index, target index).
-    let mut results: BTreeMap<(usize, usize), Outcome> = BTreeMap::new();
-    // Extractions skipped because the run log is current.
-    let mut skipped: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut r = Run::new(plugins, targets);
+    for phase in [Phase::Index, Phase::Extract, Phase::Correlate] {
+        r.phase(phase, targets, None, sink, runs);
+    }
+    r.finish(targets, log)
+}
 
-    for (ti, t) in targets.iter().enumerate() {
-        for (pi, p) in plugins.iter().enumerate() {
-            let m = p.manifest();
-            if m.applies_to(&t.system.family)
-                && let Some(o) = missing_requirement(m, t)
-            {
-                results.insert((pi, ti), o);
+/// A run taken one phase at a time, so the project can load Extract's output before Correlate
+/// reads it (L5). Phases go in order, each over the same targets.
+pub struct Run<'p> {
+    plugins: &'p [&'p dyn Plugin],
+    extracted: Vec<(Kind, SystemId)>,
+    /// Outcomes so far, by (plugin index, target index).
+    results: BTreeMap<(usize, usize), Outcome>,
+    /// Extractions skipped because the run log is current.
+    skipped: BTreeSet<(usize, usize)>,
+}
+
+impl<'p> Run<'p> {
+    pub fn new(plugins: &'p [&'p dyn Plugin], targets: &[Target<'_>]) -> Self {
+        let mut results = BTreeMap::new();
+        for (ti, t) in targets.iter().enumerate() {
+            for (pi, p) in plugins.iter().enumerate() {
+                let m = p.manifest();
+                if m.applies_to(&t.system.family)
+                    && let Some(o) = missing_requirement(m, t)
+                {
+                    results.insert((pi, ti), o);
+                }
             }
+        }
+        Self {
+            plugins,
+            extracted: Vec::new(),
+            results,
+            skipped: BTreeSet::new(),
         }
     }
 
-    for phase in [Phase::Index, Phase::Extract, Phase::Correlate] {
+    /// Runs one phase of every plugin on every target.
+    pub fn phase(
+        &mut self,
+        phase: Phase,
+        targets: &[Target<'_>],
+        stored: Option<&dyn Stored>,
+        sink: &mut dyn Sink,
+        runs: &mut RunLog,
+    ) {
         for (ti, t) in targets.iter().enumerate() {
-            for (pi, p) in plugins.iter().enumerate() {
+            for (pi, p) in self.plugins.iter().enumerate() {
                 let m = p.manifest();
                 if !m.applies_to(&t.system.family) || !m.phases.contains(&phase) {
                     continue;
                 }
-                if results
+                if self
+                    .results
                     .get(&(pi, ti))
                     .is_some_and(|o| !matches!(o, Outcome::Ok(_)))
                 {
@@ -343,7 +395,7 @@ pub fn run(
                 if phase == Phase::Extract
                     && runs.is_current(&m.id, m.version, t.system.id, &fingerprint)
                 {
-                    skipped.insert((pi, ti));
+                    self.skipped.insert((pi, ti));
                     continue;
                 }
                 let mut ctx = RunContext {
@@ -353,6 +405,7 @@ pub fn run(
                     artifacts: &t.artifacts,
                     opener: t.opener,
                     sink,
+                    stored: stored.filter(|_| phase == Phase::Correlate),
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| match phase {
                     Phase::Index => p.index(&mut ctx),
@@ -364,35 +417,43 @@ pub fn run(
                     runs.record(m.id.clone(), m.version, t.system.id, fingerprint);
                 }
                 if phase == Phase::Extract {
-                    extracted.push((m.id.clone(), t.system.id));
+                    self.extracted.push((m.id.clone(), t.system.id));
                 }
-                let merged = match (results.remove(&(pi, ti)), outcome) {
+                let merged = match (self.results.remove(&(pi, ti)), outcome) {
                     (Some(Outcome::Ok(a)), Outcome::Ok(b)) => Outcome::Ok(a + b),
                     (_, other) => other,
                 };
-                results.insert((pi, ti), merged);
+                self.results.insert((pi, ti), merged);
             }
         }
     }
 
-    for ((pi, ti), outcome) in results {
-        let m = plugins[pi].manifest();
-        let system = targets[ti].system.id;
-        // A skipped extraction keeps the outcome of the run that did it.
-        if skipped.contains(&(pi, ti))
-            && matches!(outcome, Outcome::Ok(_))
-            && log.get(&m.id, system).is_some()
-        {
-            continue;
-        }
-        log.record(OutcomeRecord {
-            plugin: m.id.clone(),
-            version: m.version,
-            system,
-            outcome,
-        });
+    /// The plugins that extracted, per system, so far.
+    pub fn extracted(&self) -> &[(Kind, SystemId)] {
+        &self.extracted
     }
-    extracted
+
+    /// Records the outcomes in `log` and returns the plugins that extracted, per system.
+    pub fn finish(self, targets: &[Target<'_>], log: &mut OutcomeLog) -> Vec<(Kind, SystemId)> {
+        for ((pi, ti), outcome) in self.results {
+            let m = self.plugins[pi].manifest();
+            let system = targets[ti].system.id;
+            // A skipped extraction keeps the outcome of the run that did it.
+            if self.skipped.contains(&(pi, ti))
+                && matches!(outcome, Outcome::Ok(_))
+                && log.get(&m.id, system).is_some()
+            {
+                continue;
+            }
+            log.record(OutcomeRecord {
+                plugin: m.id.clone(),
+                version: m.version,
+                system,
+                outcome,
+            });
+        }
+        self.extracted
+    }
 }
 
 /// Everything a run produced, in a canonical order: what plugins emitted (plugin, kind,
