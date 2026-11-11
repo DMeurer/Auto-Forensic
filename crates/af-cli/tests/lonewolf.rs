@@ -657,4 +657,20 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             ),
         ]
     );
+
+    // X5: a Run key value is a fact (R10), and SOFTWARE's Run key's last write an event (R7).
+    let (run_facts, run_written): (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM facts WHERE kind = 'windows.autorun' \
+                 AND json_extract_string(attrs, '$.hive') = 'windows.software' \
+                 AND json_extract_string(attrs, '$.key') = 'Run'), \
+             (SELECT count(*) FROM events e JOIN records r ON r.id = e.record \
+              WHERE e.kind = 'windows.registry.key_written' AND r.locator LIKE \
+              '%config%2FSOFTWARE/reg.key:\\Microsoft\\Windows\\CurrentVersion\\Run')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(run_facts > 0, "{run_facts}");
+    assert_eq!(run_written, 1);
 }
