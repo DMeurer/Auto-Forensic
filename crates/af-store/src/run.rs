@@ -394,11 +394,7 @@ pub fn run_project(
                     .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
             }
         }
-        spool.add_links(
-            sink.links
-                .iter()
-                .map(|(l, by)| (l.id, l.kind.as_str(), &l.from, &l.to, by.as_str())),
-        )?;
+        spool.add_links(&sink.links)?;
     }
 
     // 2. Write the project, briefly.

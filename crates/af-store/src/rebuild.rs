@@ -8,6 +8,25 @@
 
 use crate::{Error, Store};
 use af_core::ids::Endpoint;
+use af_core::runner::NewLink;
+
+/// One link as `af explain` shows it, seen from one of its ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkLine {
+    pub id: u128,
+    pub kind: String,
+    pub tier: String,
+    pub label: String,
+    pub reason: String,
+    pub key: String,
+    pub description: Option<String>,
+    pub created_by: String,
+    /// From the end asked about to the other one.
+    pub outgoing: bool,
+    /// The other end: `event`, `fact`, `group` or `file`, and its ID (none for a file).
+    pub other_kind: String,
+    pub other_id: Option<u128>,
+}
 use duckdb::params;
 
 /// The `created_by` of everything the analyst made by hand.
@@ -98,7 +117,8 @@ impl Store {
     ) -> Result<(), Error> {
         let (f, t) = (from.to_columns(), to.to_columns());
         self.conn.execute(
-            "INSERT INTO links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+             NULL, NULL, NULL, NULL, NULL)",
             params![
                 id,
                 kind,
@@ -118,20 +138,17 @@ impl Store {
         Ok(())
     }
 
-    /// Stores many links in one go, as (id, kind, from, to, created by): a plugin can make
-    /// hundreds of thousands (M6, one per change journal event).
-    pub fn add_links<'a>(
-        &mut self,
-        links: impl IntoIterator<Item = (u128, &'a str, &'a Endpoint, &'a Endpoint, &'a str)>,
-    ) -> Result<(), Error> {
+    /// Stores many links in one go, with their tier, label, reason, key and description:
+    /// a plugin can make hundreds of thousands (M6, one per change journal event).
+    pub fn add_links(&mut self, links: &[(NewLink, String)]) -> Result<(), Error> {
         let tx = self.conn.transaction()?;
         {
             let mut app = tx.appender("links")?;
-            for (id, kind, from, to, created_by) in links {
-                let (f, t) = (from.to_columns(), to.to_columns());
+            for (l, created_by) in links {
+                let (f, t) = (l.from.to_columns(), l.to.to_columns());
                 app.append_row(params![
-                    id,
-                    kind,
+                    l.id,
+                    l.kind.as_str(),
                     f.kind,
                     f.id,
                     f.system,
@@ -142,11 +159,51 @@ impl Store {
                     t.system,
                     t.file_scheme,
                     t.file_value,
-                    created_by
+                    created_by,
+                    l.tier.as_str(),
+                    l.label,
+                    l.reason,
+                    l.key,
+                    l.description,
                 ])?;
             }
         }
         tx.commit()
+    }
+
+    /// The links from and to `of`: strong before possible, then by label (L1).
+    pub fn links_of(&self, of: &Endpoint) -> Result<Vec<LinkLine>, Error> {
+        let c = of.to_columns();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, coalesce(tier, 'strong'), coalesce(label, kind), \
+             coalesce(reason, ''), coalesce(key, ''), description, created_by, \
+             from_kind = ? AND from_id IS NOT DISTINCT FROM ?, \
+             CASE WHEN from_kind = ? AND from_id IS NOT DISTINCT FROM ? THEN to_kind \
+                  ELSE from_kind END, \
+             CASE WHEN from_kind = ? AND from_id IS NOT DISTINCT FROM ? THEN to_id \
+                  ELSE from_id END \
+             FROM links \
+             WHERE (from_kind = ? AND from_id IS NOT DISTINCT FROM ?) \
+                OR (to_kind = ? AND to_id IS NOT DISTINCT FROM ?) \
+             ORDER BY coalesce(tier, 'strong') = 'possible', 4, 1",
+        )?;
+        let k = c.kind;
+        let rows = stmt.query_map(params![k, c.id, k, c.id, k, c.id, k, c.id, k, c.id], |r| {
+            Ok(LinkLine {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                tier: r.get(2)?,
+                label: r.get(3)?,
+                reason: r.get(4)?,
+                key: r.get(5)?,
+                description: r.get(6)?,
+                created_by: r.get(7)?,
+                outgoing: r.get(8)?,
+                other_kind: r.get(9)?,
+                other_id: r.get(10)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// IDs and creators of all links, ordered by ID.
@@ -308,5 +365,78 @@ mod tests {
         store.clear_links_and_groups_of("test.usn", None).unwrap();
         let ids: Vec<u128> = store.links().unwrap().into_iter().map(|(i, _)| i).collect();
         assert_eq!(ids, [30]);
+    }
+
+    /// L1: an event's links, strong before possible, each with its label, reason and key.
+    #[test]
+    fn links_of_an_event_strong_first() {
+        use af_core::names::Kind;
+        use af_core::runner::LinkTier;
+        let mut store = Store::in_memory(256).unwrap();
+        let (a, b, c) = (
+            Endpoint::Event(EventId(1)),
+            Endpoint::Event(EventId(2)),
+            Endpoint::Event(EventId(3)),
+        );
+        let link = |id, from: &Endpoint, to: &Endpoint, tier, label: &str| NewLink {
+            id,
+            kind: Kind::new("test.step").unwrap(),
+            from: from.clone(),
+            to: to.clone(),
+            tier,
+            label: label.into(),
+            reason: "same path and size".into(),
+            key: "x.exe (3 bytes)".into(),
+            description: None,
+        };
+        store
+            .add_links(&[
+                (
+                    link(10, &a, &b, LinkTier::Possible, "probably installed to"),
+                    "p".into(),
+                ),
+                (
+                    link(11, &c, &a, LinkTier::Strong, "saved as file"),
+                    "p".into(),
+                ),
+            ])
+            .unwrap();
+        let got: Vec<(String, String, bool)> = store
+            .links_of(&a)
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.label, l.tier, l.outgoing))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("saved as file".into(), "strong".into(), false),
+                ("probably installed to".into(), "possible".into(), true),
+            ]
+        );
+    }
+
+    /// A project made before L1 gets the new link columns when it is opened for writing.
+    #[test]
+    fn an_older_links_table_gains_the_new_columns() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE links (id UHUGEINT NOT NULL, kind VARCHAR NOT NULL, \
+             from_kind VARCHAR NOT NULL, from_id UHUGEINT, from_system UHUGEINT, \
+             from_file_scheme VARCHAR, from_file_value BLOB, to_kind VARCHAR NOT NULL, \
+             to_id UHUGEINT, to_system UHUGEINT, to_file_scheme VARCHAR, to_file_value BLOB, \
+             created_by VARCHAR NOT NULL)",
+        )
+        .unwrap();
+        let store = Store::setup(conn, 256).unwrap();
+        let n: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM duckdb_columns() WHERE table_name = 'links'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 18);
     }
 }

@@ -112,13 +112,39 @@ pub struct NewRecord {
     pub attrs: Option<String>,
 }
 
-/// A link a plugin produced.
+/// How sure a link is (L1, the format agreed in stage 0). Possible links sort last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LinkTier {
+    /// The two sides share a key that names one object (a path and a size, a record number).
+    Strong,
+    /// A guess the key only makes likely (a name and a short time apart).
+    Possible,
+}
+
+impl LinkTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Strong => "strong",
+            Self::Possible => "possible",
+        }
+    }
+}
+
+/// A link a plugin produced, earlier step first, with what it rests on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewLink {
     pub id: u128,
     pub kind: Kind,
     pub from: Endpoint,
     pub to: Endpoint,
+    pub tier: LinkTier,
+    /// A few words, read from `from` to `to`: `saved as file`, `run`.
+    pub label: String,
+    /// The kind of key, in words: `download target path and size match the file in $MFT`.
+    pub reason: String,
+    /// The shared value itself: `\Users\ich\Downloads\x.exe (113409064 bytes)`.
+    pub key: String,
+    pub description: Option<String>,
 }
 
 /// A group a plugin produced (B2): members that belong together, and why.

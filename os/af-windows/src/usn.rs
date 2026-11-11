@@ -12,7 +12,7 @@ use af_core::ids::{Endpoint, EventId, FactId, FileId, record_id};
 use af_core::names::Kind;
 use af_core::path::{Name, NameKind};
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{NewEvent, NewLink, NewRecord, Plugin, RunContext};
+use af_core::runner::{LinkTier, NewEvent, NewLink, NewRecord, Plugin, RunContext};
 use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, TimeMeaning};
 use af_fmt_usn::{FileRef, Names, parent_paths};
@@ -176,6 +176,13 @@ impl Plugin for Journal {
                                 kind: link_kind.clone(),
                                 from: Endpoint::Event(event),
                                 to: file.clone(),
+                                tier: LinkTier::Strong,
+                                label: "changed".into(),
+                                reason: "the journal record names the file's MFT record and \
+                                         sequence number"
+                                    .into(),
+                                key: format!("MFT record {}, sequence {}", r.file.0, r.file.1),
+                                description: None,
                             },
                         );
                         n += 1;

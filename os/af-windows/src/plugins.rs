@@ -162,6 +162,13 @@ impl Plugin for HiveRootKeys {
                         kind: link_kind.clone(),
                         from: Endpoint::Fact(fact),
                         to: Endpoint::Event(event),
+                        tier: af_core::runner::LinkTier::Strong,
+                        label: "root key of hive written".into(),
+                        reason: "the key is a root key of the hive whose root was last written \
+                                 then"
+                            .into(),
+                        key: subject.clone(),
+                        description: None,
                     },
                 );
                 n += 1;

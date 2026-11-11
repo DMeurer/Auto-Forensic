@@ -87,6 +87,9 @@ enum Command {
         #[arg(long)]
         limit: Option<u64>,
     },
+    /// One event and its links, each with its label first, strong before possible (L1). The
+    /// event ID is the last column of `af events`.
+    Explain { project: PathBuf, event: String },
 }
 
 #[derive(Subcommand)]
@@ -233,6 +236,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             kind,
             limit,
         } => events(&project, kind.as_deref(), limit, &mut out)?,
+        Command::Explain { project, event } => explain(&project, &event, &mut out)?,
         Command::Users { project } => {
             let p = Project::open_read_only(&project, wait())?;
             let mut facts = p.store.facts()?;
@@ -433,6 +437,58 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 /// `af events`: the project's maps, then the compiled-in ones (af's, then EvtxECmd's), applied
 /// to each event log record.
+/// `af explain`: the event, then its links, label first.
+fn explain(
+    project: &std::path::Path,
+    event: &str,
+    out: &mut dyn Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let id =
+        u128::from_str_radix(event.trim(), 16).map_err(|e| format!("event ID {event}: {e}"))?;
+    let p = Project::open_read_only(project, wait())?;
+    let describe = |id: u128| -> Result<String, Box<dyn std::error::Error>> {
+        Ok(match p.store.event_by_id(id)? {
+            Some((e, _)) => {
+                let time = Time::from_columns(&e.time)
+                    .map(|t| t.display())
+                    .unwrap_or_default();
+                format!("{time}  {}", e.kind)
+            }
+            None => format!("{id:032x}"),
+        })
+    };
+    let Some((e, record)) = p.store.event_by_id(id)? else {
+        return Err(format!("no event {event} in this project").into());
+    };
+    writeln!(out, "{}  {}", describe(id)?, e.meaning)?;
+    if let Some(r) = record {
+        writeln!(out, "  record {r}")?;
+    }
+    let links = p
+        .store
+        .links_of(&af_core::ids::Endpoint::Event(af_core::ids::EventId(id)))?;
+    if links.is_empty() {
+        writeln!(out, "no links")?;
+    }
+    for l in links {
+        let other = match (l.other_kind.as_str(), l.other_id) {
+            ("event", Some(o)) => describe(o)?,
+            (kind, Some(o)) => format!("{kind} {o:032x}"),
+            (kind, None) => kind.to_string(),
+        };
+        let arrow = if l.outgoing { "->" } else { "<-" };
+        writeln!(
+            out,
+            "{}  {arrow} {other}  [{}]  {}: {}",
+            l.label, l.tier, l.reason, l.key
+        )?;
+        if let Some(d) = l.description {
+            writeln!(out, "    {d}")?;
+        }
+    }
+    Ok(())
+}
+
 fn events(
     project: &std::path::Path,
     kind: Option<&str>,
@@ -483,6 +539,8 @@ fn events(
             None => cols.extend(std::iter::repeat_n(String::new(), 10)),
         }
         cols.push(record.unwrap_or_default());
+        // L1: the ID `af explain` takes.
+        cols.push(format!("{:032x}", e.id));
         lines.push(cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t"));
     }
     // A note shows when its map was used or its event was asked for, even with no events: it
@@ -505,7 +563,7 @@ fn events(
         out,
         "time\tkind\tmeaning\tdescription\tuser_name\tremote_host\texecutable_info\t\
          payload_data1\tpayload_data2\tpayload_data3\tpayload_data4\tpayload_data5\tpayload_data6\t\
-         record"
+         record\tid"
     )?;
     for l in lines {
         writeln!(out, "{l}")?;

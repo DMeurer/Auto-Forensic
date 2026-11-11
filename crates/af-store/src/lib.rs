@@ -246,8 +246,23 @@ CREATE TABLE IF NOT EXISTS links (
     to_system UHUGEINT,
     to_file_scheme VARCHAR,
     to_file_value BLOB,
-    created_by VARCHAR NOT NULL
+    created_by VARCHAR NOT NULL,
+    tier VARCHAR,
+    label VARCHAR,
+    reason VARCHAR,
+    key VARCHAR,
+    description VARCHAR
 );
+";
+
+/// Columns added after a table was first made, for projects made before them (L1's link
+/// format). `ADD COLUMN IF NOT EXISTS` leaves newer projects as they are.
+const MIGRATIONS: &str = "
+ALTER TABLE links ADD COLUMN IF NOT EXISTS tier VARCHAR;
+ALTER TABLE links ADD COLUMN IF NOT EXISTS label VARCHAR;
+ALTER TABLE links ADD COLUMN IF NOT EXISTS reason VARCHAR;
+ALTER TABLE links ADD COLUMN IF NOT EXISTS key VARCHAR;
+ALTER TABLE links ADD COLUMN IF NOT EXISTS description VARCHAR;
 ";
 
 /// An open project store.
@@ -312,6 +327,7 @@ impl Store {
              SET preserve_insertion_order = false;"
         ))?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(MIGRATIONS)?;
         Ok(Self { conn })
     }
 
@@ -532,6 +548,16 @@ impl Store {
             Ok((event_row(r)?, r.get(21)?, r.get(22)?))
         })?
         .collect()
+    }
+
+    /// One event with its record's locator, or `None` if there is no such event.
+    pub fn event_by_id(&self, id: u128) -> Result<Option<(EventRow, Option<String>)>, Error> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {EVENT_COLUMNS}, r.locator FROM events e \
+             LEFT JOIN records r ON r.id = e.record WHERE e.id = ?"
+        ))?;
+        let mut rows = stmt.query_map(params![id], |r| Ok((event_row(r)?, r.get(21)?)))?;
+        rows.next().transpose()
     }
 
     /// All events, ordered by ID.

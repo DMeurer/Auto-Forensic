@@ -89,6 +89,34 @@ fn project_canary() {
     // systems, and the profile plugin where an NTUSER.DAT is.
     assert!(first.contains("19 extracted"), "{first}");
 
+    // L1: an event's links, label first. The SYSTEM hive's root was written at t, the first
+    // root_written event; its three root keys point to it.
+    let written = af(&["events", c, "--kind", "windows.hive.root_written"]);
+    let id = written
+        .lines()
+        .nth(1)
+        .and_then(|l| l.rsplit('\t').next())
+        .unwrap_or_else(|| panic!("{written}"))
+        .to_string();
+    let explained = af(&["explain", c, &id]);
+    let lines: Vec<&str> = explained.lines().collect();
+    assert!(
+        lines[0].contains("windows.hive.root_written"),
+        "{explained}"
+    );
+    let link_lines: Vec<&&str> = lines.iter().filter(|l| l.contains(" <- ")).collect();
+    assert_eq!(link_lines.len(), 3, "{explained}");
+    assert!(
+        link_lines
+            .iter()
+            .all(|l| l.starts_with("root key of hive written  <- fact ") && l.contains("[strong]")),
+        "{explained}"
+    );
+    assert!(
+        explained.contains("windows.hive.system:ControlSet001"),
+        "{explained}"
+    );
+
     // Absent inputs are reported clearly, and told apart from inputs with nothing in them.
     let status = af(&["status", c]);
     assert!(
