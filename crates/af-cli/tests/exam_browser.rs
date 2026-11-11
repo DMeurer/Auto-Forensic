@@ -111,5 +111,56 @@ fn exam_browser_history() {
         )
         .unwrap();
     assert_eq!((term.as_str(), docforge), ("dokumentenfälschung strafe", 9));
+    // B2: one group per host and session.
+    let groups: Vec<(String, i64, String)> = db
+        .prepare(
+            "SELECT g.reason, count(*), \
+             strftime(make_timestamp(((min(e.ts) - 116444736000000000) // 10)::BIGINT), '%H:%M') \
+             || '-' || strftime(make_timestamp(((max(e.ts) - 116444736000000000) // 10)::BIGINT), '%H:%M') \
+             FROM groups g JOIN group_members m ON m.grp = g.id \
+             JOIN events e ON e.id = m.member_id WHERE g.kind = 'browser.session' \
+             GROUP BY g.id, g.reason ORDER BY min(e.ts), g.reason",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // The document-forgery research (Google with its 2 searches, three law and ID sites:
+    // 16 visits) and the 9 visits to DocForge24 at 192.168.2.57 are six groups. Exact hosts
+    // (the user's choice) keep www.4n6.de and 4n6.de apart.
+    let groups: Vec<(String, i64, &str)> = groups
+        .iter()
+        .map(|(r, n, t)| (r.split(',').next().unwrap().to_string(), *n, t.as_str()))
+        .collect();
+    let want = [
+        ("1 browser event at windows.msn.com", 1, "09:15-09:15"),
+        ("2 browser events at windows.msn.com", 2, "07:18-07:37"),
+        ("11 browser events at www.google.com", 11, "07:49-07:50"),
+        (
+            "5 browser events at www.gesetze-im-internet.de",
+            5,
+            "07:49-07:49",
+        ),
+        ("1 browser event at webid-solutions.com", 1, "07:50-07:50"),
+        ("1 browser event at www.strafrecht.berlin", 1, "07:50-07:50"),
+        ("9 browser events at 192.168.2.57", 9, "08:02-08:04"),
+        ("1 browser event at windows.msn.com", 1, "13:20-13:20"),
+        ("1 browser event at windows.msn.com", 1, "08:58-08:58"),
+        ("1 browser event at 192.168.2.160", 1, "09:00-09:00"),
+        ("1 browser event at 5.83.183.4", 1, "09:02-09:02"),
+        ("3 browser events at hpm.dnshome.de", 3, "09:05-09:05"),
+        ("1 browser event at www.4n6.de", 1, "09:05-09:05"),
+        ("2 browser events at 4n6.de", 2, "09:05-09:05"),
+    ];
+    assert_eq!(groups, want.map(|(r, n, t)| (r.to_string(), n, t)));
+    let terms: i64 = db
+        .query_row(
+            "SELECT count(DISTINCT subject) FROM facts WHERE kind = 'browser.search_term'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(terms, 1, "both searches were for one term");
     std::fs::remove_dir_all(&parent).unwrap();
 }
