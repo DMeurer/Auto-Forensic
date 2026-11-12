@@ -137,6 +137,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_core::fs_timeline::Timeline,
             &af_windows::usn::Journal,
             &af_windows::same_file::SameFile,
+            &af_windows::sessions::Sessions,
         ],
         &profiles,
     )
@@ -589,6 +590,22 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     ] {
         assert!(reasons.iter().any(|r| r == want), "{want} in {reasons:#?}");
     }
+
+    // L4: one session pairs, jcloudy's from 09:19:58 to the logoff at 09:55:16, before the
+    // first boot marker but after the Security log starts. The 40 process starts are SYSTEM's.
+    let (sessions, logons): (String, i64) = db
+        .query_row(
+            "SELECT (SELECT string_agg(label || ' ' || key, '; ') FROM links \
+                 WHERE created_by = 'windows.sessions'), \
+             (SELECT count(*) FROM groups WHERE kind = 'windows.logon.processes')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (sessions.as_str(), logons),
+        ("session logged off session 2, DESKTOP-PM6C56D\\jcloudy", 0)
+    );
 
     // X4: the Recycle Bin, as RBCmd reads it (~/af-stage3/x4): five items jcloudy deleted, all
     // still recoverable (their $R files and folders are there).

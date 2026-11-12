@@ -37,6 +37,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_core::fs_timeline::Timeline,
     &af_windows::usn::Journal,
     &af_windows::same_file::SameFile,
+    &af_windows::sessions::Sessions,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

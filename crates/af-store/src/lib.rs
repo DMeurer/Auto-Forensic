@@ -647,6 +647,54 @@ impl af_core::runner::Stored for Store {
         .and_then(|rows| rows.collect())
         .map_err(std::io::Error::other)
     }
+
+    fn events(
+        &self,
+        system: SystemId,
+        kinds: &[&str],
+    ) -> std::io::Result<Vec<af_core::runner::StoredEvent>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, record, kind, ts FROM events WHERE system = ? AND kind IN \
+                 (SELECT unnest(string_split(?, ','))) ORDER BY ts, id",
+            )
+            .map_err(std::io::Error::other)?;
+        stmt.query_map(params![system.0, kinds.join(",")], |r| {
+            Ok(af_core::runner::StoredEvent {
+                id: af_core::ids::EventId(r.get(0)?),
+                record: r.get(1)?,
+                kind: r.get(2)?,
+                ts: r.get(3)?,
+            })
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(std::io::Error::other)
+    }
+
+    fn records_of(&self, ids: &[u128]) -> std::io::Result<Vec<af_core::runner::StoredRecord>> {
+        let ids = ids
+            .iter()
+            .map(u128::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, locator, attrs FROM records WHERE id IN \
+                 (SELECT unnest(string_split(?, ','))::UHUGEINT) ORDER BY id",
+            )
+            .map_err(std::io::Error::other)?;
+        stmt.query_map(params![ids], |r| {
+            Ok(af_core::runner::StoredRecord {
+                id: r.get(0)?,
+                locator: r.get(1)?,
+                attrs: r.get(2)?,
+            })
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(std::io::Error::other)
+    }
 }
 
 #[cfg(test)]
@@ -770,6 +818,24 @@ mod tests {
         let events = store.events_of(&[big, 7]).unwrap();
         let ids: Vec<(u128, u128)> = events.iter().map(|(r, e)| (*r, e.0)).collect();
         assert_eq!(ids, [(7, 3), (big, 2), (big, 1)]);
+        // L4: events by kind and time, and records by ID.
+        let by_kind: Vec<(u128, Option<i64>)> =
+            Stored::events(&store, SystemId(1), &["test.event"])
+                .unwrap()
+                .iter()
+                .map(|e| (e.id.0, e.ts))
+                .collect();
+        assert_eq!(
+            by_kind.iter().map(|e| e.0).collect::<Vec<_>>(),
+            [4, 2, 3, 1]
+        );
+        assert!(
+            Stored::events(&store, SystemId(1), &["other"])
+                .unwrap()
+                .is_empty()
+        );
+        let got = store.records_of(&[8, big]).unwrap();
+        assert_eq!(got.iter().map(|r| r.id).collect::<Vec<_>>(), [8, big]);
     }
 
     /// Whether the events table is stored in time order: `rowid` is the physical position.

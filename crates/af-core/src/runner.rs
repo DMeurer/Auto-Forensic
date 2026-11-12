@@ -60,6 +60,15 @@ pub struct StoredRecord {
     pub attrs: Option<String>,
 }
 
+/// An event the project holds, with its time as the store sorts it (`TimeColumns::ts`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEvent {
+    pub id: EventId,
+    pub record: u128,
+    pub kind: String,
+    pub ts: Option<i64>,
+}
+
 /// Read access to the project for Correlate: records by kind, and their events.
 pub trait Stored {
     /// Every record of `kind` on `system`.
@@ -67,6 +76,12 @@ pub trait Stored {
 
     /// The events of these records as (record, event), by time within a record.
     fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<(u128, EventId)>>;
+
+    /// Every event of these kinds on `system`, by time (L4).
+    fn events(&self, system: SystemId, kinds: &[&str]) -> std::io::Result<Vec<StoredEvent>>;
+
+    /// These records, by ID.
+    fn records_of(&self, ids: &[u128]) -> std::io::Result<Vec<StoredRecord>>;
 }
 
 /// Opens the bytes of an artifact.
