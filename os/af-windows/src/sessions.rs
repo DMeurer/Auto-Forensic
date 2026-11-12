@@ -10,10 +10,11 @@
 //! (the log rolled over), so nothing there is paired.
 
 use af_core::bytes::Locator;
+use af_core::ids::SystemId;
 use af_core::ids::{Endpoint, EventId, FactId, GroupId};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{LinkTier, NewGroup, NewLink, Plugin, RunContext, StoredEvent};
+use af_core::runner::{LinkTier, NewGroup, NewLink, Plugin, RunContext, Stored, StoredEvent};
 use af_core::system::Family;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -47,29 +48,15 @@ impl Plugin for Sessions {
         let Some(stored) = ctx.stored else {
             return Outcome::Ok(0);
         };
-        let kinds = [12, 21, 23, 24, 4608, 4624, 4688].map(|id| format!("windows.evtx.{id}"));
-        let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
-        let Ok(events) = stored.events(ctx.system.id, &kinds) else {
+        let Some((events, records)) = load(
+            stored,
+            ctx.system.id,
+            &[12, 21, 23, 24, 4608, 4624, 4688],
+            &[],
+        ) else {
             return Outcome::Ok(0);
         };
-        let ids: Vec<u128> = events.iter().map(|e| e.record).collect();
-        let Ok(records) = stored.records_of(&ids) else {
-            return Outcome::Ok(0);
-        };
-        let records: HashMap<u128, (String, Value)> = records
-            .into_iter()
-            .map(|r| {
-                let attrs = r
-                    .attrs
-                    .as_deref()
-                    .and_then(|a| serde_json::from_str(a).ok());
-                (r.id, (r.locator, attrs.unwrap_or_default()))
-            })
-            .collect();
-        let read: Vec<Read> = events
-            .iter()
-            .filter_map(|e| Read::new(e, records.get(&e.record)?))
-            .collect();
+        let read = read_all(&events, &records);
         let found = find(&read);
         let id = self.manifest().id.clone();
         let mut n = 0;
@@ -128,6 +115,63 @@ impl Plugin for Sessions {
     }
 }
 
+/// Records by ID: locator and attributes.
+pub(crate) type Records = HashMap<u128, (String, Value)>;
+
+/// The events of these event IDs (`windows.evtx.<id>`) and other kinds on `system`, by time,
+/// with their records.
+pub(crate) fn load(
+    stored: &dyn Stored,
+    system: SystemId,
+    ids: &[u32],
+    other: &[&str],
+) -> Option<(Vec<StoredEvent>, Records)> {
+    let kinds: Vec<String> = ids
+        .iter()
+        .map(|id| format!("windows.evtx.{id}"))
+        .chain(other.iter().map(|k| k.to_string()))
+        .collect();
+    let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
+    let events = stored.events(system, &kinds).ok()?;
+    let ids: Vec<u128> = events.iter().map(|e| e.record).collect();
+    let records = stored
+        .records_of(&ids)
+        .ok()?
+        .into_iter()
+        .map(|r| {
+            let attrs = r
+                .attrs
+                .as_deref()
+                .and_then(|a| serde_json::from_str(a).ok());
+            (r.id, (r.locator, attrs.unwrap_or_default()))
+        })
+        .collect();
+    Some((events, records))
+}
+
+/// The event log events among `events`, in their order.
+pub(crate) fn read_all<'a>(events: &[StoredEvent], records: &'a Records) -> Vec<Read<'a>> {
+    events
+        .iter()
+        .filter_map(|e| Read::new(e, records.get(&e.record)?))
+        .collect()
+}
+
+/// The time from which events pair (the earliest Security event: before it a boot may have
+/// gone unlogged) and each event's boot number (the boot markers at or before it).
+pub(crate) fn boots(read: &[Read]) -> Option<(i64, Vec<usize>)> {
+    let from = read.iter().find(|r| r.channel == "Security")?.ts;
+    let mut boot = 0;
+    let boots = read
+        .iter()
+        .map(|r| {
+            boot += usize::from(r.boot_marker);
+            boot
+        })
+        .collect();
+    Some((from, boots))
+}
+
 /// A stable ID for what a rule makes about the record at `locator`.
 pub(crate) fn derive(locator: &str, kind: &Kind, subject: &str) -> u128 {
     let locator = Locator::parse(locator).unwrap_or_else(|| Locator::root("record", locator));
@@ -135,7 +179,7 @@ pub(crate) fn derive(locator: &str, kind: &Kind, subject: &str) -> u128 {
 }
 
 /// A field as text, numbers included (the parser keeps numbers as numbers).
-fn text(v: &Value) -> Option<String> {
+pub(crate) fn text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
@@ -143,23 +187,23 @@ fn text(v: &Value) -> Option<String> {
     }
 }
 
-/// What the rule needs of one event.
-struct Read<'a> {
-    id: EventId,
-    ts: i64,
-    locator: &'a str,
-    channel: String,
-    event: u32,
-    boot_marker: bool,
+/// What the rules need of one event.
+pub(crate) struct Read<'a> {
+    pub(crate) id: EventId,
+    pub(crate) ts: i64,
+    pub(crate) locator: &'a str,
+    pub(crate) channel: String,
+    pub(crate) event: u32,
+    pub(crate) boot_marker: bool,
     /// LocalSessionManager's (session ID, user).
-    session: (String, String),
-    data: &'a Value,
-    /// 4624's target logon ID or 4688's subject logon ID, lower case.
-    logon_id: Option<String>,
+    pub(crate) session: (String, String),
+    pub(crate) data: &'a Value,
+    /// The target logon ID of 4624, 4634 and 4647, or 4688's subject logon ID, lower case.
+    pub(crate) logon_id: Option<String>,
 }
 
 impl<'a> Read<'a> {
-    fn new(e: &StoredEvent, (locator, attrs): &'a (String, Value)) -> Option<Self> {
+    pub(crate) fn new(e: &StoredEvent, (locator, attrs): &'a (String, Value)) -> Option<Self> {
         let system = &attrs["System"];
         let channel = system["Channel"].as_str()?.to_string();
         let event = u32::try_from(system["EventID"].as_u64()?).ok()?;
@@ -169,7 +213,7 @@ impl<'a> Read<'a> {
         let user = &attrs["UserData"]["EventXML"];
         let data = &attrs["EventData"];
         let logon_id = match event {
-            4624 => text(&data["TargetLogonId"]),
+            4624 | 4634 | 4647 => text(&data["TargetLogonId"]),
             4688 => text(&data["SubjectLogonId"]),
             _ => None,
         };
@@ -213,18 +257,9 @@ struct Logon {
 
 /// Pairs sessions and groups logons. `read` is in time order.
 fn find(read: &[Read]) -> Found {
-    let Some(from) = read.iter().find(|r| r.channel == "Security").map(|r| r.ts) else {
+    let Some((from, boots)) = boots(read) else {
         return Found::default();
     };
-    // Boot number of each event: the boot markers at or before it.
-    let mut boot = 0;
-    let boots: Vec<usize> = read
-        .iter()
-        .map(|r| {
-            boot += usize::from(r.boot_marker);
-            boot
-        })
-        .collect();
     let mut found = Found::default();
     let mut open: HashMap<&(String, String), usize> = HashMap::new();
     let mut logons: HashMap<(usize, &str), usize> = HashMap::new();

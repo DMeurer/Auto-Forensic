@@ -10,11 +10,11 @@ use crate::host::event;
 use crate::registry::{REG_BINARY, path};
 use crate::registry_timeline::key_locator;
 use af_core::capability::{HiveId, RegKey};
-use af_core::ids::FactId;
+use af_core::ids::{FactId, record_id};
 use af_core::names::Kind;
 use af_core::path::Name;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{CAPABILITY_REGISTRY, NewFact, Plugin, RunContext};
+use af_core::runner::{CAPABILITY_REGISTRY, NewFact, NewRecord, Plugin, RunContext};
 use af_core::system::Family;
 use af_core::time::Time;
 use std::collections::HashMap;
@@ -39,7 +39,8 @@ impl Plugin for Sam {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.sam").expect("valid kind"),
-            version: 1,
+            // 2: each account also a `windows.account` record, which its times point at (L10).
+            version: 2,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: ["windows.hive.sam", "windows.hive.log"]
@@ -112,6 +113,8 @@ impl Plugin for Sam {
                 );
             }
             let locator = key_locator(&hive, &k);
+            // The account's own record, apart from the key's (R7): its times point at it.
+            let account = locator.child("windows.account", &rid.to_string());
             let u16_at = |o: usize| u16::from_le_bytes([f[o], f[o + 1]]);
             let attrs = serde_json::json!({
                 "rid": rid,
@@ -126,6 +129,18 @@ impl Plugin for Sam {
                 "reset_data": k.value("ResetData").and_then(|h| utf16(&h.data)),
             });
             let kind = Kind::new("windows.account").expect("valid kind");
+            // The record the account's times point at, so rules can tell whose they are.
+            ctx.sink.record(
+                &id,
+                ctx.system.id,
+                NewRecord {
+                    id: record_id(&source.to_string(), &account),
+                    source,
+                    kind: kind.clone(),
+                    locator: account.clone(),
+                    attrs: Some(attrs.to_string()),
+                },
+            );
             ctx.sink.fact(
                 &id,
                 ctx.system.id,
@@ -148,7 +163,7 @@ impl Plugin for Sam {
                     event(
                         ctx,
                         &id,
-                        (source, &locator),
+                        (source, &account),
                         kind,
                         Time::from_ticks_1601(ticks),
                     );

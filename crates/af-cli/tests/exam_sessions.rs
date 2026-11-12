@@ -1,4 +1,4 @@
-//! L4 on the exam image's event logs and SYSTEM hive, copied out in stage 0
+//! L4 and L10 on the exam image's event logs and SYSTEM and SAM hives, copied out in stage 0
 //! (`~/af-stage0/extract`), laid out as a Windows folder. Skipped where the copies aren't.
 
 use std::path::Path;
@@ -41,8 +41,14 @@ fn exam_sessions() {
     copy(&logs, &disk.join("Windows/System32/winevt/Logs"));
     let config = disk.join("Windows/System32/config");
     std::fs::create_dir_all(&config).unwrap();
-    for f in ["SYSTEM", "SYSTEM.LOG1", "SYSTEM.LOG2"] {
-        std::fs::copy(stage0.join("hives").join(f), config.join(f)).unwrap();
+    for hive in ["SYSTEM", "SAM"] {
+        for f in [
+            hive.to_string(),
+            format!("{hive}.LOG1"),
+            format!("{hive}.LOG2"),
+        ] {
+            std::fs::copy(stage0.join("hives").join(&f), config.join(&f)).unwrap();
+        }
     }
     let case = parent.join("case");
     let c = case.to_str().unwrap();
@@ -94,5 +100,79 @@ fn exam_sessions() {
         )
         .unwrap();
     assert_eq!(groups, 0);
+
+    // L10: stage 0's r3. The four failed logons each followed by a success, both SAM values on
+    // their events, 23 logoffs of logons that lasted longer than 10 s, the 38 that didn't in one
+    // group per boot, and the 45 normal-and-elevated token pairs.
+    let logons: Vec<(String, String, String)> = db
+        .prepare(
+            "SELECT l.label, \
+             strftime(make_timestamp(((a.ts - 116444736000000000) // 10)::BIGINT), '%m-%d %H:%M:%S') \
+             || '-' || strftime(make_timestamp(((b.ts - 116444736000000000) // 10)::BIGINT), '%H:%M:%S'), \
+             coalesce(l.description, '') FROM links l JOIN events a ON a.id = l.from_id \
+             JOIN events b ON b.id = l.to_id WHERE l.created_by = 'windows.logons' \
+             AND l.label NOT IN ('user logged off', 'session ended') ORDER BY a.ts, l.label",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let want = [
+        (
+            "then logged on",
+            "04-18 09:06:29-09:06:34",
+            "5 s after the failed attempt",
+        ),
+        (
+            "then logged on",
+            "04-18 09:24:38-09:24:43",
+            "5 s after the failed attempt",
+        ),
+        (
+            "then logged on",
+            "09-08 08:13:33-08:13:37",
+            "4 s after the failed attempt",
+        ),
+        (
+            "is SAM's last wrong password",
+            "09-08 09:09:42-09:09:42",
+            "SAM 09:09:42.573, event 09:09:42.641",
+        ),
+        (
+            "then logged on",
+            "09-08 09:09:42-09:09:48",
+            "5 s after the failed attempt",
+        ),
+        (
+            "is SAM's last logon",
+            "09-08 09:09:48-09:09:48",
+            "SAM 09:09:48.584, event 09:09:48.628",
+        ),
+    ];
+    assert_eq!(
+        logons,
+        want.map(|(l, t, d)| (l.to_string(), t.to_string(), d.to_string()))
+    );
+    let counts: Vec<(String, i64, i64)> = db
+        .prepare(
+            "SELECT 'link ' || label, count(*), 0 FROM links WHERE created_by = 'windows.logons' \
+             AND label IN ('user logged off', 'session ended') GROUP BY label \
+             UNION ALL SELECT 'group ' || g.kind, count(DISTINCT g.id), count(*) FROM groups g \
+             JOIN group_members m ON m.grp = g.id WHERE g.created_by = 'windows.logons' \
+             GROUP BY g.kind ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let want = [
+        ("group windows.logon.short", 18, 76),
+        ("group windows.logon.tokens", 45, 90),
+        ("link session ended", 2, 0),
+        ("link user logged off", 21, 0),
+    ];
+    assert_eq!(counts, want.map(|(k, n, m)| (k.to_string(), n, m)));
     std::fs::remove_dir_all(&parent).unwrap();
 }

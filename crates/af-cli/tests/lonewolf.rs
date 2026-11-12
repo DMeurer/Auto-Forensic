@@ -142,6 +142,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::usn::Journal,
             &af_windows::same_file::SameFile,
             &af_windows::sessions::Sessions,
+            &af_windows::logons::Logons,
         ],
         &profiles,
     )
@@ -626,7 +627,13 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         .collect();
     let want = [
         ("group windows.hive.root", 11),
+        // L10: one boot's 36 logons of jcloudy under 10 s are one of these.
+        ("group windows.logon.short", 3),
+        ("group windows.logon.tokens", 25),
         ("group windows.same_file", 112),
+        // L10: two logons that lasted 59 s, jcloudy's 09:19:58 to 09:55:16 (L4's session too),
+        // and SAM's last logon.
+        ("link windows.logon", 4),
         ("link windows.session.ended", 1),
     ];
     assert_eq!(made, want.map(|(k, n)| (k.to_string(), n)));

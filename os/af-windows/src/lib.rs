@@ -17,6 +17,7 @@ pub mod evtx;
 pub mod evtx_map;
 pub mod host;
 pub mod lnk;
+pub mod logons;
 pub mod loose;
 pub mod mft;
 pub mod network;
