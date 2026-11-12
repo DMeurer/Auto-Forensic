@@ -137,16 +137,16 @@ fn renamed_hives_are_identified() {
     assert!(status.contains("windows.hive.system: 2"), "{status}");
     assert!(status.contains("no plugin has run on it yet"), "{status}");
     // C0c: af run reads the hives' root keys into facts, plus one last-written event per hive
-    // and one link per root key from Correlate (SYSTEM: 4 + 1 + 4, SOFTWARE: 5 + 1 + 5).
+    // and one group per hive from Correlate (SYSTEM: 4 + 1 + 1, SOFTWARE: 5 + 1 + 1).
     let (ok, out, err) = af(&["run", c]);
     assert!(ok, "{err}{out}");
     let (_, status, _) = af(&["status", c]);
     assert!(
-        status.contains("windows.hive.root_keys v1: read, 9 items"),
+        status.contains("windows.hive.root_keys v1: read, 6 items"),
         "{status}"
     );
     assert!(
-        status.contains("windows.hive.root_keys v1: read, 11 items"),
+        status.contains("windows.hive.root_keys v1: read, 7 items"),
         "{status}"
     );
     // R7: one key time per key, loose hives alike (SYSTEM: root and 4, SOFTWARE: root and 5).

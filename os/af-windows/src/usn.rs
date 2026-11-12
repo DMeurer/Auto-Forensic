@@ -2,17 +2,17 @@
 //! file system becomes an `ntfs.usn.record` record (USN, file and parent references, name, the
 //! folder path it had then, its change flags as MFTECmd names them), and each change flag one
 //! event at the record's time: `ntfs.usn.file_create`, `ntfs.usn.file_delete`,
-//! `ntfs.usn.rename_new_name`, `ntfs.usn.close` and so on (one per flag, your choice). Each event
-//! is linked to its file by MFT record and sequence number, so a deleted file's delete time
-//! stays with it.
+//! `ntfs.usn.rename_new_name`, `ntfs.usn.close` and so on (one per flag, your choice). The record
+//! names its file by MFT record and sequence number; it isn't linked to it (L6: a link from every
+//! journal event to its file is the "links every file" noise the user ruled out).
 
 use af_core::bytes::SourceReader;
 use af_core::fs::{FileSystem, StreamName};
-use af_core::ids::{Endpoint, EventId, FactId, FileId, record_id};
+use af_core::ids::{EventId, FileId, record_id};
 use af_core::names::Kind;
 use af_core::path::{Name, NameKind};
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{LinkTier, NewEvent, NewLink, NewRecord, Plugin, RunContext};
+use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext};
 use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, TimeMeaning};
 use af_fmt_usn::{FileRef, Names, parent_paths};
@@ -55,7 +55,8 @@ impl Plugin for Journal {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.usn").expect("valid kind"),
-            version: 1,
+            // 2: no links to files (L6).
+            version: 2,
             // NTFS on any system: a stick has a journal too.
             applies_to: vec![],
             phases: vec![Phase::Extract],
@@ -89,7 +90,6 @@ impl Plugin for Journal {
             })
             .collect();
         let record_kind = Kind::new("ntfs.usn.record").expect("valid kind");
-        let link_kind = Kind::new("ntfs.usn.file").expect("valid kind");
         let (system, sink) = (ctx.system.id, &mut *ctx.sink);
         let mut n = 0;
         for a in ctx
@@ -141,19 +141,14 @@ impl Plugin for Journal {
                         },
                     );
                     let Some(ticks) = r.ticks else { continue };
-                    let file = Endpoint::File {
-                        system,
-                        file: file_id(r.file),
-                    };
                     for (_, _, kind, meaning) in
                         kinds.iter().filter(|(bit, ..)| r.reasons & bit != 0)
                     {
-                        let event = EventId::derive(&source_text, &locator, None, kind, meaning, 0);
                         sink.event(
                             &id,
                             system,
                             NewEvent {
-                                id: event,
+                                id: EventId::derive(&source_text, &locator, None, kind, meaning, 0),
                                 source: a.source,
                                 record,
                                 kind: kind.clone(),
@@ -161,28 +156,6 @@ impl Plugin for Journal {
                                 time: Time::from_ticks_1601(ticks),
                                 clock: ClockDomainId("wall".into()),
                                 seq: None,
-                            },
-                        );
-                        sink.link(
-                            &id,
-                            NewLink {
-                                id: FactId::derive(
-                                    &source_text,
-                                    &locator,
-                                    &link_kind,
-                                    kind.as_str(),
-                                )
-                                .0,
-                                kind: link_kind.clone(),
-                                from: Endpoint::Event(event),
-                                to: file.clone(),
-                                tier: LinkTier::Strong,
-                                label: "changed".into(),
-                                reason: "the journal record names the file's MFT record and \
-                                         sequence number"
-                                    .into(),
-                                key: format!("MFT record {}, sequence {}", r.file.0, r.file.1),
-                                description: None,
                             },
                         );
                         n += 1;
@@ -246,14 +219,6 @@ fn file_ref(id: &FileId) -> Option<FileRef> {
     (id.scheme.as_str() == "ntfs.file_ref").then_some((v & 0xFFFF_FFFF_FFFF, (v >> 48) as u16))
 }
 
-/// The file ID the NTFS adapter gives `file`.
-fn file_id((n, s): FileRef) -> FileId {
-    FileId {
-        scheme: Kind::new("ntfs.file_ref").expect("valid kind"),
-        value: (n | (u64::from(s) << 48)).to_le_bytes().to_vec(),
-    }
-}
-
 /// Flags without a name, as `Unknown0x...`.
 fn unknown(reasons: u32) -> Option<String> {
     let known = REASONS.iter().fold(0, |m, (bit, ..)| m | bit);
@@ -269,7 +234,7 @@ mod tests {
     use af_core::fs::FakeFs;
     use af_core::ids::{SourceId, SystemId};
     use af_core::path::CasePolicy;
-    use af_core::runner::{NewFact, Opener, Sink, Target, run};
+    use af_core::runner::{NewFact, NewLink, Opener, Sink, Target, run};
     use af_core::system::{Family, System};
     use af_fmt_usn::{Record, build_test_record};
 
@@ -302,17 +267,14 @@ mod tests {
         fn record(&mut self, _: &Kind, _: SystemId, r: NewRecord) {
             self.0.push(r.attrs.unwrap());
         }
-        fn link(&mut self, _: &Kind, l: NewLink) {
-            let Endpoint::File { file, .. } = l.to else {
-                panic!("a link to a file")
-            };
-            self.0.push(format!("{} -> {:?}", l.kind, file_ref(&file)));
+        fn link(&mut self, _: &Kind, _: NewLink) {
+            panic!("no links (L6)")
         }
     }
 
-    /// A file created and closed, then deleted: one event per flag, each linked to the file.
+    /// A file created and closed, then deleted: one event per flag, and no links.
     #[test]
-    fn one_event_per_flag_linked_to_the_file() {
+    fn one_event_per_flag_and_no_links() {
         let mut fs = FakeFs::new(CasePolicy::Insensitive);
         let root = fs.root();
         let extend = fs.folder(&root, "$Extend");
@@ -366,20 +328,15 @@ mod tests {
             &mut af_core::runner::RunLog::new(),
         );
         let t = "2018-04-06 12:26:27.5724698 UTC";
-        let link = "ntfs.usn.file -> Some((300, 2))";
         assert_eq!(
             out.0,
             [
                 r#"{"usn":64,"entry":300,"sequence":2,"parent_entry":5,"parent_sequence":5,"name":"secret.docx","parent_path":"/","reasons":["FileCreate","Close"],"attributes":32}"#.to_string(),
                 format!("ntfs.usn.file_create {t}"),
-                link.into(),
                 format!("ntfs.usn.close {t}"),
-                link.into(),
                 r#"{"usn":184,"entry":300,"sequence":2,"parent_entry":5,"parent_sequence":5,"name":"secret.docx","parent_path":"/","reasons":["FileDelete","Close"],"attributes":32}"#.into(),
                 format!("ntfs.usn.file_delete {t}"),
-                link.into(),
                 format!("ntfs.usn.close {t}"),
-                link.into(),
             ]
         );
     }

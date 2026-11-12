@@ -5,10 +5,10 @@
 //! until those exist, using only the root-key reader.
 
 use af_core::artifact::Artifact;
-use af_core::ids::{Endpoint, EventId, FactId};
+use af_core::ids::{Endpoint, EventId, FactId, GroupId};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{NewEvent, NewLink};
+use af_core::runner::{NewEvent, NewGroup};
 use af_core::runner::{NewFact, Plugin, RunContext};
 use af_core::system::Family;
 use af_core::time::Time;
@@ -50,7 +50,7 @@ impl Plugin for HiveRootKeys {
             produces: vec![
                 Kind::new("windows.hive.root_key").expect("valid kind"),
                 Kind::new("windows.hive.root_written").expect("valid kind"),
-                Kind::new("windows.hive.root_key_of").expect("valid kind"),
+                Kind::new("windows.hive.root").expect("valid kind"),
             ],
         })
     }
@@ -123,9 +123,9 @@ impl Plugin for HiveRootKeys {
         Outcome::Ok(n)
     }
 
-    /// Links each root-key fact to its hive's last-written event. Links are made here, not in
-    /// Extract: derived links are rebuilt every run (F25), while Extract is skipped for
-    /// unchanged inputs (F24).
+    /// Groups each hive's root-written event with its root-key facts (L6: a link per root key
+    /// made 379 links to one UsrClass event). Made here, not in Extract: derived groups are
+    /// rebuilt every run (F25), while Extract is skipped for unchanged inputs (F24).
     fn correlate(&self, ctx: &mut RunContext<'_>) -> Outcome {
         let Some(opener) = ctx.opener else {
             return Outcome::Ok(0);
@@ -133,7 +133,7 @@ impl Plugin for HiveRootKeys {
         let fact_kind = Kind::new("windows.hive.root_key").expect("valid kind");
         let ev_kind = Kind::new("windows.hive.root_written").expect("valid kind");
         let meaning = TimeMeaning::new("registry.key.last_written").expect("valid meaning");
-        let link_kind = Kind::new("windows.hive.root_key_of").expect("valid kind");
+        let group_kind = Kind::new("windows.hive.root").expect("valid kind");
         let mut n = 0;
         for a in ctx
             .artifacts
@@ -152,27 +152,27 @@ impl Plugin for HiveRootKeys {
             };
             let source = a.source.to_string();
             let event = EventId::derive(&source, &a.locator, None, &ev_kind, &meaning, 0);
-            for name in names {
+            let facts = names.iter().map(|name| {
                 let subject = format!("{}:{name}", a.kind);
-                let fact = FactId::derive(&source, &a.locator, &fact_kind, &subject);
-                ctx.sink.link(
-                    &self.manifest().id,
-                    NewLink {
-                        id: FactId::derive(&source, &a.locator, &link_kind, &subject).0,
-                        kind: link_kind.clone(),
-                        from: Endpoint::Fact(fact),
-                        to: Endpoint::Event(event),
-                        tier: af_core::runner::LinkTier::Strong,
-                        label: "root key of hive written".into(),
-                        reason: "the key is a root key of the hive whose root was last written \
-                                 then"
-                            .into(),
-                        key: subject.clone(),
-                        description: None,
-                    },
-                );
-                n += 1;
-            }
+                Endpoint::Fact(FactId::derive(&source, &a.locator, &fact_kind, &subject))
+            });
+            ctx.sink.group(
+                &self.manifest().id,
+                NewGroup {
+                    id: GroupId(FactId::derive(&source, &a.locator, &group_kind, "root").0),
+                    kind: group_kind.clone(),
+                    reason: format!(
+                        "{} root key{} of {}, its root last written then",
+                        names.len(),
+                        if names.len() == 1 { "" } else { "s" },
+                        a.kind
+                    ),
+                    members: std::iter::once(Endpoint::Event(event))
+                        .chain(facts)
+                        .collect(),
+                },
+            );
+            n += 1;
         }
         Outcome::Ok(n)
     }
@@ -444,8 +444,9 @@ mod tests {
         fn event(&mut self, _: &Kind, _: SystemId, e: af_core::runner::NewEvent) {
             self.0.push(format!("event {}", e.kind));
         }
-        fn link(&mut self, _: &Kind, l: af_core::runner::NewLink) {
-            self.0.push(format!("link {}", l.kind));
+        fn group(&mut self, _: &Kind, g: NewGroup) {
+            self.0
+                .push(format!("group {} of {}", g.reason, g.members.len()));
         }
     }
 
@@ -497,17 +498,15 @@ mod tests {
             [
                 "event windows.hive.root_written",
                 "event windows.hive.root_written",
-                "link windows.hive.root_key_of",
-                "link windows.hive.root_key_of",
-                "link windows.hive.root_key_of",
-                "link windows.hive.root_key_of",
+                "group 2 root keys of windows.hive.ntuser, its root last written then of 3",
+                "group 2 root keys of windows.hive.system, its root last written then of 3",
                 "windows.hive.ntuser:Control Panel",
                 "windows.hive.ntuser:Software",
                 "windows.hive.system:MountedDevices",
                 "windows.hive.system:Select",
             ]
         );
-        assert_eq!(log.all()[0].outcome, Outcome::Ok(10));
+        assert_eq!(log.all()[0].outcome, Outcome::Ok(8));
     }
 
     #[derive(Default)]

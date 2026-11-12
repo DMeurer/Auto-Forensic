@@ -20,8 +20,12 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     if !files.iter().all(|f| f.is_file()) {
         return;
     }
-    let case = tempfile::tempdir().unwrap();
-    let mut p = Project::create(case.path(), "lonewolf").unwrap();
+    // AF_LONEWOLF_KEEP=<new folder> keeps the project there for review (L6), as `af source add`
+    // would take hours in a debug build to hash the image.
+    let temp = tempfile::tempdir().unwrap();
+    let case =
+        std::env::var_os("AF_LONEWOLF_KEEP").map_or(temp.path().to_path_buf(), PathBuf::from);
+    let mut p = Project::create(&case, "lonewolf").unwrap();
     let source = SourceInfo {
         id: SourceId::new_random(),
         kind: "image".into(),
@@ -117,7 +121,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     // I24: a run, then `af users`.
     drop(p);
     af_store::run::run_project(
-        case.path(),
+        case.as_path(),
         &[
             &af_windows::plugins::HiveRootKeys,
             &af_windows::plugins::UserProfiles,
@@ -144,7 +148,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     .unwrap();
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
         .arg("users")
-        .arg(case.path())
+        .arg(case.as_path())
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -180,7 +184,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     // I26: the kinds no plugin reads yet are marked, the hives aren't.
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
         .arg("status")
-        .arg(case.path())
+        .arg(case.as_path())
         .output()
         .unwrap();
     let status = String::from_utf8_lossy(&o.stdout);
@@ -216,7 +220,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     }
 
     // E2: Security's 4624 events, as EvtxECmd lists them (827, the earliest record 406).
-    let p = Project::open(case.path()).unwrap();
+    let p = Project::open(case.as_path()).unwrap();
     let db = p.store.connection();
     let count: i64 = db
         .query_row(
@@ -248,7 +252,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     drop(p);
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
         .args(["system", "list"])
-        .arg(case.path())
+        .arg(case.as_path())
         .output()
         .unwrap();
     let systems = String::from_utf8_lossy(&o.stdout);
@@ -264,7 +268,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
 
     // R7: one last-written event per key, as many per hive as yarp counts keys in TSK's copies
     // of the same hives with their logs (~/af-stage3/r5, 2026-11-08).
-    let p = Project::open(case.path()).unwrap();
+    let p = Project::open(case.as_path()).unwrap();
     let db = p.store.connection();
     let mut stmt = db
         .prepare(
@@ -494,7 +498,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     );
 
     // M6: the Windows partition's change journal (~/af-stage3/m6), equal to MFTECmd: 352,849
-    // records, one event per change flag (681,177), each linked to its file. jcloudy deleted
+    // records, one event per change flag (681,177), none linked to its file (L6, the user's
+    // choice: the record names it by MFT record and sequence). jcloudy deleted
     // "Cloudy thoughts (4apr).docx" from the desktop at 2018-04-05 02:39:29.7499774 UTC.
     let (records, events, links, deleted): (i64, i64, i64, String) = db
         .query_row(
@@ -515,7 +520,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         (
             352_849,
             681_177,
-            681_177,
+            0,
             "131673695697499774 /Users/jcloudy/Desktop 131041"
         )
     );
@@ -606,6 +611,25 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         (sessions.as_str(), logons),
         ("session logged off session 2, DESKTOP-PM6C56D\\jcloudy", 0)
     );
+
+    // L6: few links on the whole image (before: 681,177 journal links and 456 root-key links).
+    // Every link and group, by the rule that made it.
+    let made: Vec<(String, i64)> = db
+        .prepare(
+            "SELECT 'link ' || kind, count(*) FROM links GROUP BY kind \
+             UNION ALL SELECT 'group ' || kind, count(*) FROM groups GROUP BY kind ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let want = [
+        ("group windows.hive.root", 11),
+        ("group windows.same_file", 112),
+        ("link windows.session.ended", 1),
+    ];
+    assert_eq!(made, want.map(|(k, n)| (k.to_string(), n)));
 
     // X4: the Recycle Bin, as RBCmd reads it (~/af-stage3/x4): five items jcloudy deleted, all
     // still recoverable (their $R files and folders are there).

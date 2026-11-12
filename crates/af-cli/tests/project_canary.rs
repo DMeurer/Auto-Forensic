@@ -39,6 +39,22 @@ fn links(db: &Path) -> Vec<(u128, String)> {
     s.links().unwrap()
 }
 
+/// Every group: ID, reason and member count.
+fn groups(db: &Path) -> Vec<(u128, String, i64)> {
+    let s = Store::open_read_only(db).unwrap();
+    let mut stmt = s
+        .connection()
+        .prepare(
+            "SELECT g.id, g.reason, count(m.grp) FROM groups g \
+             LEFT JOIN group_members m ON m.grp = g.id GROUP BY ALL ORDER BY 2",
+        )
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
 /// Each system of `af status`: its line and its outcome lines.
 fn system_blocks(status: &str) -> Vec<String> {
     let mut blocks: Vec<String> = Vec::new();
@@ -89,32 +105,20 @@ fn project_canary() {
     // systems, and the profile plugin where an NTUSER.DAT is.
     assert!(first.contains("19 extracted"), "{first}");
 
-    // L1: an event's links, label first. The SYSTEM hive's root was written at t, the first
-    // root_written event; its three root keys point to it.
-    let written = af(&["events", c, "--kind", "windows.hive.root_written"]);
-    let id = written
-        .lines()
-        .nth(1)
-        .and_then(|l| l.rsplit('\t').next())
-        .unwrap_or_else(|| panic!("{written}"))
-        .to_string();
-    let explained = af(&["explain", c, &id]);
-    let lines: Vec<&str> = explained.lines().collect();
-    assert!(
-        lines[0].contains("windows.hive.root_written"),
-        "{explained}"
-    );
-    let link_lines: Vec<&&str> = lines.iter().filter(|l| l.contains(" <- ")).collect();
-    assert_eq!(link_lines.len(), 3, "{explained}");
-    assert!(
-        link_lines
-            .iter()
-            .all(|l| l.starts_with("root key of hive written  <- fact ") && l.contains("[strong]")),
-        "{explained}"
-    );
-    assert!(
-        explained.contains("windows.hive.system:ControlSet001"),
-        "{explained}"
+    // L6: a hive's root-written event and its root keys are one group, not a link per key.
+    let hive_groups = groups(&db);
+    assert_eq!(
+        hive_groups.iter().map(|g| (&*g.1, g.2)).collect::<Vec<_>>(),
+        [
+            (
+                "3 root keys of windows.hive.ntuser, its root last written then",
+                4
+            ),
+            (
+                "3 root keys of windows.hive.system, its root last written then",
+                4
+            ),
+        ]
     );
 
     // Absent inputs are reported clearly, and told apart from inputs with nothing in them.
@@ -137,12 +141,7 @@ fn project_canary() {
         users.contains("  unknown user 1      (loose hive, no SID known)"),
         "{users}"
     );
-    let links_before = links(&db);
-    assert_eq!(
-        links_before.len(),
-        6,
-        "3 root keys per hive, linked to the hive's time"
-    );
+    assert!(links(&db).is_empty(), "no plugin makes links here");
 
     // The analyst tags an event and links two of their own (L2: both survive the rebuild).
     let tagged = {
@@ -183,16 +182,24 @@ fn project_canary() {
     assert_eq!(root_times, 3, "one root time event per hive, none twice");
     assert_eq!(events.len(), 15, "and R7's key times: 4 keys in each hive");
     drop(s);
-    let links_after = links(&db);
     assert_eq!(
-        links_after.len(),
-        10,
-        "links rebuilt for all three hives, and the analyst's kept"
+        links(&db),
+        [(7, af_store::rebuild::USER.to_string())],
+        "the analyst's link is kept"
     );
-    assert!(links_after.contains(&(7, af_store::rebuild::USER.to_string())));
-    for l in &links_before {
-        assert!(links_after.contains(l), "rebuilt links keep their IDs");
+    let groups_after = groups(&db);
+    assert_eq!(groups_after.len(), 3, "groups rebuilt for all three hives");
+    for g in &hive_groups {
+        assert!(groups_after.contains(g), "rebuilt groups keep their IDs");
     }
+    // L1: an event's links, label first: the analyst's link on the tagged event.
+    let explained = af(&["explain", c, &format!("{tagged:x}")]);
+    let link_lines: Vec<&str> = explained.lines().filter(|l| l.contains(" <- ")).collect();
+    assert_eq!(link_lines.len(), 1, "{explained}");
+    assert!(
+        link_lines[0].starts_with("user.note  <- ") && link_lines[0].contains("[strong]"),
+        "{explained}"
+    );
 
     // C3b: a stick image becomes its own `none` system, and the hive systems stay as they were.
     let stick = Path::new("/mnt/hgfs/VM_sharedFolder/DF/various/USB-Stick images/FAT32-Win.E01");
@@ -211,7 +218,7 @@ fn project_canary() {
             .position(|b| {
                 b.ends_with(
                     " FAT32-Win.E01\n    fs.timeline v1: not in this project\n    \
-                     windows.usn v1: not in this project",
+                     windows.usn v2: not in this project",
                 )
             })
             .unwrap_or_else(|| panic!("the stick isn't a system with nothing read: {after:?}"));
