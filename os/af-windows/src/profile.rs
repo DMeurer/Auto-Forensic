@@ -141,6 +141,9 @@ impl OsProfile for WindowsProfile {
             MemVolume::path("Windows/AppCompat/Programs/Amcache.hve"),
             "windows.hive.amcache",
         );
+        // L9, the user's choice: a `$MFT` at the root, as triage tools copy it beside `Windows`.
+        // On an image's NTFS volume `windows.mft` leaves it to `fs.timeline`.
+        known(MemVolume::path("$MFT"), "windows.mft");
         let users = MemVolume::path("Users");
         for user in vol.list(&users) {
             let home = users.join(user);

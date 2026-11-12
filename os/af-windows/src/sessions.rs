@@ -128,7 +128,8 @@ impl Plugin for Sessions {
     }
 }
 
-fn derive(locator: &str, kind: &Kind, subject: &str) -> u128 {
+/// A stable ID for what a rule makes about the record at `locator`.
+pub(crate) fn derive(locator: &str, kind: &Kind, subject: &str) -> u128 {
     let locator = Locator::parse(locator).unwrap_or_else(|| Locator::root("record", locator));
     FactId::derive("", &locator, kind, subject).0
 }

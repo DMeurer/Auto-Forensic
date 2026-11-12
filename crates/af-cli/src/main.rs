@@ -38,6 +38,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::usn::Journal,
     &af_windows::same_file::SameFile,
     &af_windows::sessions::Sessions,
+    &af_windows::download::DownloadToUse,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

@@ -73,12 +73,24 @@ impl Plugin for Mft {
             })
         };
         let (si, fname) = (kinds(SI), kinds(FN));
-        let mut n = 0;
-        for a in ctx
+        // An image volume's own `$MFT` is read by `fs.timeline` (M3); only loose ones are read here.
+        let volumes: Vec<String> = ctx
+            .artifacts
+            .iter()
+            .filter(|a| a.kind.as_str() == "fs.ntfs")
+            .map(|a| format!("{}/", a.locator))
+            .collect();
+        let loose: Vec<_> = ctx
             .artifacts
             .iter()
             .filter(|a| a.kind.as_str() == "windows.mft")
-        {
+            .filter(|a| !volumes.iter().any(|v| a.locator.to_string().starts_with(v)))
+            .collect();
+        if loose.is_empty() {
+            return Outcome::NotAcquired;
+        }
+        let mut n = 0;
+        for a in loose {
             let path = a.locator.steps().last().map_or("", |s| s.id.as_str());
             let data = opener.open(a).and_then(|src| {
                 let mut buf = vec![0; usize::try_from(src.len()).map_err(std::io::Error::other)?];

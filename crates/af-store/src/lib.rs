@@ -603,6 +603,16 @@ fn event_row(r: &duckdb::Row<'_>) -> duckdb::Result<EventRow> {
     })
 }
 
+/// An event row as Correlate reads it: ID, record, kind, time.
+fn stored_event(r: &duckdb::Row<'_>) -> duckdb::Result<af_core::runner::StoredEvent> {
+    Ok(af_core::runner::StoredEvent {
+        id: af_core::ids::EventId(r.get(0)?),
+        record: r.get(1)?,
+        kind: r.get(2)?,
+        ts: r.get(3)?,
+    })
+}
+
 /// Correlate reads the project through this (L5).
 impl af_core::runner::Stored for Store {
     fn records(
@@ -627,7 +637,7 @@ impl af_core::runner::Stored for Store {
         .map_err(std::io::Error::other)
     }
 
-    fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<(u128, af_core::ids::EventId)>> {
+    fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<af_core::runner::StoredEvent>> {
         // One text parameter: IDs above i128 don't fit a plain integer literal.
         let ids = records
             .iter()
@@ -637,15 +647,13 @@ impl af_core::runner::Stored for Store {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT record, id FROM events WHERE record IN \
+                "SELECT id, record, kind, ts FROM events WHERE record IN \
                  (SELECT unnest(string_split(?, ','))::UHUGEINT) ORDER BY record, ts, id",
             )
             .map_err(std::io::Error::other)?;
-        stmt.query_map(params![ids], |r| {
-            Ok((r.get(0)?, af_core::ids::EventId(r.get(1)?)))
-        })
-        .and_then(|rows| rows.collect())
-        .map_err(std::io::Error::other)
+        stmt.query_map(params![ids], stored_event)
+            .and_then(|rows| rows.collect())
+            .map_err(std::io::Error::other)
     }
 
     fn events(
@@ -660,16 +668,9 @@ impl af_core::runner::Stored for Store {
                  (SELECT unnest(string_split(?, ','))) ORDER BY ts, id",
             )
             .map_err(std::io::Error::other)?;
-        stmt.query_map(params![system.0, kinds.join(",")], |r| {
-            Ok(af_core::runner::StoredEvent {
-                id: af_core::ids::EventId(r.get(0)?),
-                record: r.get(1)?,
-                kind: r.get(2)?,
-                ts: r.get(3)?,
-            })
-        })
-        .and_then(|rows| rows.collect())
-        .map_err(std::io::Error::other)
+        stmt.query_map(params![system.0, kinds.join(",")], stored_event)
+            .and_then(|rows| rows.collect())
+            .map_err(std::io::Error::other)
     }
 
     fn records_of(&self, ids: &[u128]) -> std::io::Result<Vec<af_core::runner::StoredRecord>> {
@@ -816,7 +817,7 @@ mod tests {
             [(7, "loc7"), (big, &*format!("loc{big}"))]
         );
         let events = store.events_of(&[big, 7]).unwrap();
-        let ids: Vec<(u128, u128)> = events.iter().map(|(r, e)| (*r, e.0)).collect();
+        let ids: Vec<(u128, u128)> = events.iter().map(|e| (e.record, e.id.0)).collect();
         assert_eq!(ids, [(7, 3), (big, 2), (big, 1)]);
         // L4: events by kind and time, and records by ID.
         let by_kind: Vec<(u128, Option<i64>)> =

@@ -74,8 +74,8 @@ pub trait Stored {
     /// Every record of `kind` on `system`.
     fn records(&self, system: SystemId, kind: &Kind) -> std::io::Result<Vec<StoredRecord>>;
 
-    /// The events of these records as (record, event), by time within a record.
-    fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<(u128, EventId)>>;
+    /// The events of these records, by record, then time.
+    fn events_of(&self, records: &[u128]) -> std::io::Result<Vec<StoredEvent>>;
 
     /// Every event of these kinds on `system`, by time (L4).
     fn events(&self, system: SystemId, kinds: &[&str]) -> std::io::Result<Vec<StoredEvent>>;

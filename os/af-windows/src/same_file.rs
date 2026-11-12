@@ -89,8 +89,11 @@ impl Plugin for SameFile {
             return Outcome::Ok(0);
         };
         let mut by_record: HashMap<u128, Vec<Endpoint>> = HashMap::new();
-        for (r, e) in events {
-            by_record.entry(r).or_default().push(Endpoint::Event(e));
+        for e in events {
+            by_record
+                .entry(e.record)
+                .or_default()
+                .push(Endpoint::Event(e.id));
         }
         let mut n = 0;
         for f in &found {
