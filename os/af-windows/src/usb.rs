@@ -8,6 +8,11 @@
 //! is only unique on this system (`weak_serial`). A storage instance is named by its USB
 //! device's serial plus `&0` and so on, or, for a weak serial, by the USB device's
 //! `ParentIdPrefix` (on the exam image, `6&1526ad36&0`).
+//!
+//! Links (piece L8, your choices, as stage 0's rule r2): each device fact to its own times, the USB
+//! device to its disk ("is storage of"), and the disk to each mounted device that names it
+//! ("mounted as"). Event log entries that name a device come in Correlate
+//! ([`crate::usb_connections`]).
 
 use crate::autoruns::{control_sets, plain};
 use crate::host::event;
@@ -16,11 +21,11 @@ use crate::registry_timeline::key_locator;
 use crate::sam::utf16;
 use af_core::bytes::Locator;
 use af_core::capability::{HiveId, RegKey, Registry};
-use af_core::ids::{FactId, SourceId};
+use af_core::ids::{Endpoint, EventId, FactId, SourceId};
 use af_core::names::Kind;
 use af_core::path::{Name, ViewPath};
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{CAPABILITY_REGISTRY, NewFact, Plugin, RunContext};
+use af_core::runner::{CAPABILITY_REGISTRY, LinkTier, NewFact, NewLink, Plugin, RunContext};
 use af_core::system::Family;
 use af_core::time::Time;
 use std::sync::OnceLock;
@@ -44,7 +49,7 @@ impl Plugin for Usb {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.usb").expect("valid kind"),
-            version: 1,
+            version: 2,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: ["windows.hive.system", "windows.hive.log"]
@@ -62,6 +67,7 @@ impl Plugin for Usb {
             ]
             .into_iter()
             .chain(TIME_KINDS.map(|(_, k)| k))
+            .chain(["windows.usb"])
             .map(|k| Kind::new(k).expect("valid kind"))
             .collect(),
         })
@@ -83,38 +89,63 @@ impl Plugin for Usb {
                     subject: String,
                     attrs: serde_json::Value| {
             let kind = Kind::new(kind).expect("valid kind");
+            let fact = FactId::derive(&source.to_string(), locator, &kind, &subject);
             ctx.sink.fact(
                 &id,
                 ctx.system.id,
                 NewFact {
-                    id: FactId::derive(&source.to_string(), locator, &kind, &subject),
+                    id: fact,
                     source,
                     kind,
                     subject,
                     attrs: Some(attrs.to_string()),
                 },
             );
+            fact
         };
-        // (value name, target)
+        let link_kind = Kind::new("windows.usb").expect("valid kind");
+        let link = |ctx: &mut RunContext<'_>,
+                    (from, to): (Endpoint, Endpoint),
+                    label: &str,
+                    reason: String,
+                    key: String| {
+            let anchor = Locator::root("af.link", &format!("{from:?} {to:?}"));
+            ctx.sink.link(
+                &id,
+                NewLink {
+                    id: FactId::derive("", &anchor, &link_kind, label).0,
+                    kind: link_kind.clone(),
+                    from,
+                    to,
+                    tier: LinkTier::Strong,
+                    label: label.into(),
+                    reason,
+                    key,
+                    description: None,
+                },
+            );
+        };
+        // (value name, target, fact)
         let mut mounted = vec![];
         if let Some(k) = reg.key(&system, &path("MountedDevices")) {
             let locator = key_locator(&hive, &k);
             for v in &k.values {
                 let (name, target) = (plain(&v.name), mounted_target(&v.data));
                 let at = locator.child("reg.value", &name);
-                fact(
+                let f = fact(
                     ctx,
                     &at,
                     "windows.mounted_device",
                     name.clone(),
                     serde_json::json!({ "target": target }),
                 );
-                mounted.push((name, target));
+                mounted.push((name, target, f));
                 n += 1;
             }
         }
         for set in control_sets(reg) {
             let devices = instances(reg, &system, &format!("{set}\\Enum\\USB"));
+            let mut device_facts = vec![];
             for (model, serial, k) in &devices {
                 let (mut vid, mut pid) = (None, None);
                 for part in model.split('&') {
@@ -138,14 +169,25 @@ impl Plugin for Usb {
                     "device_name": property(reg, &system, k, BUS_NAME),
                     "location": reg_sz(k, "LocationInformation"),
                 });
-                fact(
+                let f = fact(
                     ctx,
                     &locator,
                     "windows.usb_device",
                     format!("{model}\\{serial}"),
                     attrs,
                 );
-                n += 1 + times(ctx, reg, &system, (source, &hive), k, &id);
+                device_facts.push(f);
+                n += 1;
+                for (label, number, e) in times(ctx, reg, &system, (source, &hive), k, &id) {
+                    link(
+                        ctx,
+                        (Endpoint::Fact(f), Endpoint::Event(e)),
+                        label,
+                        format!("the device's key holds it as property {number}"),
+                        format!("USB\\{model}\\{serial}"),
+                    );
+                    n += 1;
+                }
             }
             for (disk, serial, k) in instances(reg, &system, &format!("{set}\\Enum\\USBSTOR")) {
                 let part = |p: &str| {
@@ -153,14 +195,21 @@ impl Plugin for Usb {
                         .find_map(|s| s.strip_prefix(p))
                         .map(String::from)
                 };
-                let usb = devices.iter().find(|(_, s, d)| {
-                    let prefix = if weak(s) {
-                        reg_sz(d, "ParentIdPrefix")
-                    } else {
-                        Some(s.clone())
-                    };
-                    prefix.is_some_and(|p| serial.starts_with(&format!("{p}&")))
-                });
+                // The USB device whose serial, or ParentIdPrefix for a made-up serial, starts the
+                // disk's instance name; with that prefix.
+                let usb = devices
+                    .iter()
+                    .zip(&device_facts)
+                    .find_map(|((m, s, d), f)| {
+                        let prefix = if weak(s) {
+                            reg_sz(d, "ParentIdPrefix")
+                        } else {
+                            Some(s.clone())
+                        };
+                        prefix
+                            .filter(|p| serial.starts_with(&format!("{p}&")))
+                            .map(|p| (m, s, *f, p))
+                    });
                 // A mounted device's target: `\??\USBSTOR#<disk>#<instance>#{class}`.
                 let needle = format!("#{disk}#{serial}#").to_ascii_lowercase();
                 let locator = key_locator(&hive, &k);
@@ -175,21 +224,59 @@ impl Plugin for Usb {
                     "disk_id": reg
                         .key(&system, &below(&k, "Device Parameters\\Partmgr"))
                         .and_then(|p| reg_sz(&p, "DiskId")),
-                    "usb_device": usb.map(|(m, s, _)| format!("{m}\\{s}")),
+                    "usb_device": usb.as_ref().map(|(m, s, ..)| format!("{m}\\{s}")),
                     "mounted_as": mounted
                         .iter()
-                        .filter(|(_, t)| t.to_ascii_lowercase().contains(&needle))
-                        .map(|(name, _)| name)
+                        .filter(|(_, t, _)| t.to_ascii_lowercase().contains(&needle))
+                        .map(|(name, ..)| name)
                         .collect::<Vec<_>>(),
                 });
-                fact(
+                let f = fact(
                     ctx,
                     &locator,
                     "windows.usb_storage",
                     format!("{disk}\\{serial}"),
                     attrs,
                 );
-                n += 1 + times(ctx, reg, &system, (source, &hive), &k, &id);
+                n += 1;
+                for (label, number, e) in times(ctx, reg, &system, (source, &hive), &k, &id) {
+                    link(
+                        ctx,
+                        (Endpoint::Fact(f), Endpoint::Event(e)),
+                        label,
+                        format!("the disk's key holds it as property {number}"),
+                        format!("USBSTOR\\{disk}\\{serial}"),
+                    );
+                    n += 1;
+                }
+                if let Some((m, s, device, prefix)) = &usb {
+                    let how = if weak(s) {
+                        "the USB device's ParentIdPrefix"
+                    } else {
+                        "the USB device's serial"
+                    };
+                    link(
+                        ctx,
+                        (Endpoint::Fact(*device), Endpoint::Fact(f)),
+                        "is storage of",
+                        format!("the disk's instance name {serial} starts with {how}"),
+                        format!("USB\\{m}\\{s} / {prefix}"),
+                    );
+                    n += 1;
+                }
+                for (name, _, m) in mounted
+                    .iter()
+                    .filter(|(_, t, _)| t.to_ascii_lowercase().contains(&needle))
+                {
+                    link(
+                        ctx,
+                        (Endpoint::Fact(f), Endpoint::Fact(*m)),
+                        "mounted as",
+                        format!("MountedDevices value {name} names the disk and its instance"),
+                        format!("{disk}#{serial}"),
+                    );
+                    n += 1;
+                }
             }
         }
         Outcome::Ok(n)
@@ -215,7 +302,8 @@ fn instances(reg: &dyn Registry, hive: &HiveId, at: &str) -> Vec<(String, String
     out
 }
 
-/// The device's install and connection times as events; how many there were.
+/// The device's install and connection times as events: each one's link label, property number
+/// and event ID.
 fn times(
     ctx: &mut RunContext<'_>,
     reg: &dyn Registry,
@@ -223,8 +311,8 @@ fn times(
     (source, hive_loc): (SourceId, &Locator),
     device: &RegKey,
     plugin: &Kind,
-) -> u64 {
-    let mut n = 0;
+) -> Vec<(&'static str, &'static str, EventId)> {
+    let mut out = vec![];
     for (number, kind) in TIME_KINDS {
         let Some(k) = reg.key(hive, &below(device, &format!("{TIMES}\\{number}"))) else {
             continue;
@@ -235,17 +323,23 @@ fn times(
         let ticks = u64::from_le_bytes(ticks.try_into().expect("eight bytes"));
         if ticks != 0 {
             let locator = key_locator(hive_loc, &k);
-            event(
+            let e = event(
                 ctx,
                 plugin,
                 (source, &locator),
                 kind,
                 Time::from_ticks_1601(ticks),
             );
-            n += 1;
+            let label = match kind {
+                "windows.usb.installed" => "installed",
+                "windows.usb.first_installed" => "first installed",
+                "windows.usb.last_connected" => "last connected",
+                _ => "last removed",
+            };
+            out.push((label, number, e));
         }
     }
-    n
+    out
 }
 
 /// A string device property: the default value of `<device>\<at>`.
@@ -325,6 +419,20 @@ mod tests {
             self.0.push(format!("{} {}", e.kind, e.time.display()));
         }
         fn record(&mut self, _: &Kind, _: SystemId, _: NewRecord) {}
+        fn link(&mut self, _: &Kind, l: NewLink) {
+            let end = |e: &Endpoint| match e {
+                Endpoint::Event(_) => "event",
+                _ => "fact",
+            };
+            self.0.push(format!(
+                "link {} {} -> {}: {} ({})",
+                l.label,
+                end(&l.from),
+                end(&l.to),
+                l.reason,
+                l.key
+            ));
+        }
     }
 
     /// The exam image's stick: a weak serial, its disk found by `ParentIdPrefix` and mounted as
@@ -419,6 +527,10 @@ mod tests {
             r#"windows.usb_device VID_ABCD&PID_1234\5&12c8f4c0&0&2 {"control_set":"ControlSet001","vid":"ABCD","pid":"1234","serial":"5&12c8f4c0&0&2","weak_serial":true,"parent_id_prefix":"6&1526ad36&0","service":null,"description":"USB Mass Storage Device","friendly_name":null,"device_name":"UDisk","location":null}"#.into(),
             "windows.usb.last_connected 2026-04-18 10:04:21.2535899 UTC".into(),
             r#"windows.usb_storage Disk&Ven_General&Prod_UDisk&Rev_5.00\6&1526ad36&0&_&0 {"control_set":"ControlSet001","vendor":"General","product":"UDisk","revision":"5.00","serial":"6&1526ad36&0&_&0","weak_serial":true,"friendly_name":"General UDisk USB Device","disk_id":null,"usb_device":"VID_ABCD&PID_1234\\5&12c8f4c0&0&2","mounted_as":["\\DosDevices\\F:"]}"#.into(),
+            // L8: the device to its time, to its disk, and the disk to its drive letter.
+            r"link last connected fact -> event: the device's key holds it as property 0066 (USB\VID_ABCD&PID_1234\5&12c8f4c0&0&2)".into(),
+            r"link is storage of fact -> fact: the disk's instance name 6&1526ad36&0&_&0 starts with the USB device's ParentIdPrefix (USB\VID_ABCD&PID_1234\5&12c8f4c0&0&2 / 6&1526ad36&0)".into(),
+            r"link mounted as fact -> fact: MountedDevices value \DosDevices\F: names the disk and its instance (Disk&Ven_General&Prod_UDisk&Rev_5.00#6&1526ad36&0&_&0)".into(),
         ];
         want.sort();
         out.0.sort();

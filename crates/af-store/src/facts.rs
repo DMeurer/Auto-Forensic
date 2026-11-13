@@ -42,6 +42,25 @@ impl Store {
         tx.commit()
     }
 
+    /// One fact (L8), or `None` when there is no such fact.
+    pub fn fact_by_id(&self, id: u128) -> Result<Option<FactRow>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source, system, kind, subject, attrs, created_by FROM facts WHERE id = ?",
+        )?;
+        let mut rows = stmt.query_map([id], |r| {
+            Ok(FactRow {
+                id: r.get(0)?,
+                source: r.get(1)?,
+                system: r.get(2)?,
+                kind: r.get(3)?,
+                subject: r.get(4)?,
+                attrs: r.get(5)?,
+                created_by: r.get(6)?,
+            })
+        })?;
+        rows.next().transpose()
+    }
+
     /// All facts, by kind then subject.
     pub fn facts(&self) -> Result<Vec<FactRow>, Error> {
         let mut stmt = self.conn.prepare(

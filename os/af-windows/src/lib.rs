@@ -33,6 +33,7 @@ pub mod same_file;
 pub mod sessions;
 pub mod tasks;
 pub mod usb;
+pub mod usb_connections;
 pub mod usn;
 
 pub use profile::WindowsProfile;

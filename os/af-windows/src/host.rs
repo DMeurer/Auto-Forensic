@@ -127,15 +127,16 @@ pub(crate) fn event(
     (source, locator): (af_core::ids::SourceId, &af_core::bytes::Locator),
     kind: &str,
     time: Time,
-) {
+) -> EventId {
     let kind = Kind::new(kind).expect("valid kind");
     let meaning = TimeMeaning::new(kind.as_str()).expect("valid meaning");
     let source_text = source.to_string();
+    let id = EventId::derive(&source_text, locator, None, &kind, &meaning, 0);
     ctx.sink.event(
         plugin,
         ctx.system.id,
         NewEvent {
-            id: EventId::derive(&source_text, locator, None, &kind, &meaning, 0),
+            id,
             source,
             record: record_id(&source_text, locator),
             kind,
@@ -145,6 +146,7 @@ pub(crate) fn event(
             seq: None,
         },
     );
+    id
 }
 
 #[cfg(test)]

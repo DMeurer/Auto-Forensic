@@ -673,6 +673,64 @@ impl af_core::runner::Stored for Store {
             .map_err(std::io::Error::other)
     }
 
+    fn records_mentioning(
+        &self,
+        system: SystemId,
+        kind: &Kind,
+        words: &[String],
+    ) -> std::io::Result<Vec<af_core::runner::StoredRecord>> {
+        if words.is_empty() {
+            return Ok(vec![]);
+        }
+        // One list parameter; a word with a tab would split, and none of a fact's names has one.
+        let words = words
+            .iter()
+            .map(|w| w.to_lowercase())
+            .collect::<Vec<_>>()
+            .join("\t");
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, locator, attrs FROM records WHERE system = ? AND kind = ? AND \
+                 list_bool_or(list_transform(string_split(?, '\t'), \
+                 lambda w: contains(lower(attrs), w))) ORDER BY id",
+            )
+            .map_err(std::io::Error::other)?;
+        stmt.query_map(params![system.0, kind.as_str(), words], |r| {
+            Ok(af_core::runner::StoredRecord {
+                id: r.get(0)?,
+                locator: r.get(1)?,
+                attrs: r.get(2)?,
+            })
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(std::io::Error::other)
+    }
+
+    fn facts(
+        &self,
+        system: SystemId,
+        kinds: &[&str],
+    ) -> std::io::Result<Vec<af_core::runner::StoredFact>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, kind, subject, attrs FROM facts WHERE system = ? AND kind IN \
+                 (SELECT unnest(string_split(?, ','))) ORDER BY id",
+            )
+            .map_err(std::io::Error::other)?;
+        stmt.query_map(params![system.0, kinds.join(",")], |r| {
+            Ok(af_core::runner::StoredFact {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                subject: r.get(2)?,
+                attrs: r.get(3)?,
+            })
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(std::io::Error::other)
+    }
+
     fn records_of(&self, ids: &[u128]) -> std::io::Result<Vec<af_core::runner::StoredRecord>> {
         let ids = ids
             .iter()
@@ -837,6 +895,65 @@ mod tests {
         );
         let got = store.records_of(&[8, big]).unwrap();
         assert_eq!(got.iter().map(|r| r.id).collect::<Vec<_>>(), [8, big]);
+    }
+
+    /// L8: records by words in their content, ignoring case, and facts by kind.
+    #[test]
+    fn correlate_finds_records_by_word_and_facts_by_kind() {
+        use af_core::runner::Stored;
+        let mut store = Store::in_memory(256).unwrap();
+        let record = |id, system, attrs: &str| RecordRow {
+            id,
+            source: 1,
+            system,
+            kind: "windows.evtx.record".into(),
+            locator: format!("loc{id}"),
+            attrs: Some(attrs.into()),
+            created_by: "test.plugin".into(),
+        };
+        store
+            .insert_records(&[
+                record(
+                    1,
+                    1,
+                    r#"{"ParentId":"USB\\VID_ABCD&PID_1234\\5&12C8F4C0&0&2"}"#,
+                ),
+                record(2, 1, r#"{"Id":"USBSTOR\\Disk\\6&1526ad36&0&_&0"}"#),
+                record(3, 1, r#"{"Other":"x"}"#),
+                record(4, 2, r#"{"ParentId":"5&12c8f4c0&0&2"}"#),
+            ])
+            .unwrap();
+        let kind = Kind::new("windows.evtx.record").unwrap();
+        let words = ["5&12c8f4c0&0&2".to_string(), "6&1526AD36&0&_&0".to_string()];
+        let got = store
+            .records_mentioning(SystemId(1), &kind, &words)
+            .unwrap();
+        assert_eq!(got.iter().map(|r| r.id).collect::<Vec<_>>(), [1, 2]);
+        assert!(
+            store
+                .records_mentioning(SystemId(1), &kind, &[])
+                .unwrap()
+                .is_empty()
+        );
+        let fact = |id, kind: &str| crate::facts::FactRow {
+            id,
+            source: 1,
+            system: 1,
+            kind: kind.into(),
+            subject: format!("s{id}"),
+            attrs: None,
+            created_by: "test.plugin".into(),
+        };
+        store
+            .insert_facts(&[fact(5, "a"), fact(6, "b"), fact(7, "c")])
+            .unwrap();
+        let got = Stored::facts(&store, SystemId(1), &["a", "c"]).unwrap();
+        assert_eq!(
+            got.iter()
+                .map(|f| (f.id, f.subject.as_str()))
+                .collect::<Vec<_>>(),
+            [(5, "s5"), (7, "s7")]
+        );
     }
 
     /// Whether the events table is stored in time order: `rowid` is the physical position.

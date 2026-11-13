@@ -41,6 +41,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::logons::Logons,
     &af_windows::download::DownloadToUse,
     &af_windows::moved::MovedTo,
+    &af_windows::usb_connections::UsbConnections,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];
@@ -92,9 +93,9 @@ enum Command {
         #[arg(long)]
         limit: Option<u64>,
     },
-    /// One event or group and its links, each with its label first, strong before possible
+    /// One event, group or fact and its links, each with its label first, strong before possible
     /// (L1), then the groups it is in with their links (L7). The event ID is the last column of
-    /// `af events`; group IDs show in explain.
+    /// `af events`; group and fact IDs show in explain.
     Explain { project: PathBuf, id: String },
 }
 
@@ -443,14 +444,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 /// `af events`: the project's maps, then the compiled-in ones (af's, then EvtxECmd's), applied
 /// to each event log record.
-/// `af explain`: an event or a group (L7), its links, label first, then the groups it is
-/// directly in, each with the links to and from that group.
+/// `af explain`: an event, a group (L7) or a fact (L8), its links, label first, then the groups
+/// it is directly in, each with the links to and from that group.
 fn explain(
     project: &std::path::Path,
     id: &str,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use af_core::ids::{Endpoint, EventId, GroupId};
+    use af_core::ids::{Endpoint, EventId, FactId, GroupId};
     let id = u128::from_str_radix(id.trim(), 16).map_err(|e| format!("ID {id}: {e}"))?;
     let p = Project::open_read_only(project, wait())?;
     let endpoint = if let Some((e, record)) = p.store.event_by_id(id)? {
@@ -475,8 +476,16 @@ fn explain(
             writeln!(out, "  and {} more", members.len() - SHOWN)?;
         }
         Endpoint::Group(GroupId(id))
+    } else if let Some(f) = p.store.fact_by_id(id)? {
+        writeln!(out, "fact {}  {id:032x}", f.kind)?;
+        writeln!(out, "  {}", f.subject)?;
+        if let Some(a) = f.attrs {
+            writeln!(out, "  {a}")?;
+        }
+        writeln!(out, "  made by {}", f.created_by)?;
+        Endpoint::Fact(FactId(id))
     } else {
-        return Err(format!("no event or group {id:x} in this project").into());
+        return Err(format!("no event, group or fact {id:x} in this project").into());
     };
     if write_links(&p, &endpoint, "", out)? == 0 {
         writeln!(out, "no links")?;
@@ -495,7 +504,8 @@ fn explain(
     Ok(())
 }
 
-/// One line for an event (time and kind), a group (kind, reason, ID) or another endpoint.
+/// One line for an event (time and kind), a group (kind, reason, ID), a fact (kind, subject, ID)
+/// or another endpoint.
 fn describe(p: &Project, kind: &str, id: u128) -> Result<String, Box<dyn std::error::Error>> {
     Ok(match kind {
         "event" => match p.store.event_by_id(id)? {
@@ -510,6 +520,10 @@ fn describe(p: &Project, kind: &str, id: u128) -> Result<String, Box<dyn std::er
         "group" => match p.store.group_by_id(id)? {
             Some(g) => format!("group {}: {}  {id:032x}", g.kind, g.reason),
             None => format!("group {id:032x}"),
+        },
+        "fact" => match p.store.fact_by_id(id)? {
+            Some(f) => format!("fact {}: {}  {id:032x}", f.kind, f.subject),
+            None => format!("fact {id:032x}"),
         },
         kind => format!("{kind} {id:032x}"),
     })

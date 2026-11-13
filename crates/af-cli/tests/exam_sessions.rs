@@ -1,4 +1,4 @@
-//! L4 and L10 on the exam image's event logs and SYSTEM and SAM hives, copied out in stage 0
+//! L4, L8 and L10 on the exam image's event logs and SYSTEM and SAM hives, copied out in stage 0
 //! (`~/af-stage0/extract`), laid out as a Windows folder. Skipped where the copies aren't.
 
 use std::path::Path;
@@ -174,5 +174,77 @@ fn exam_sessions() {
         ("link user logged off", 21, 0),
     ];
     assert_eq!(counts, want.map(|(k, n, m)| (k.to_string(), n, m)));
+
+    // L8: the stick (stage 0's rule r2). Its USB device and disk each link to their registry
+    // times and to every log entry that names them: all 16 that mention it, one naming both.
+    let (usb, disk) = (
+        r"VID_ABCD&PID_1234\5&12c8f4c0&0&2",
+        r"Disk&Ven_General&Prod_UDisk&Rev_5.00\6&1526ad36&0&_&0",
+    );
+    let stick: Vec<(String, String, i64)> = db
+        .prepare(
+            "SELECT f.kind, l.label, count(*) FROM links l JOIN facts f ON f.id = l.from_id \
+             WHERE f.subject IN (?, ?) GROUP BY ALL ORDER BY 1, 2",
+        )
+        .unwrap()
+        .query_map([usb, disk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let want = [
+        ("windows.usb_device", "first installed", 1),
+        ("windows.usb_device", "installed", 1),
+        ("windows.usb_device", "is storage of", 1),
+        ("windows.usb_device", "last connected", 1),
+        ("windows.usb_device", "named in log", 7),
+        ("windows.usb_storage", "first installed", 1),
+        ("windows.usb_storage", "installed", 1),
+        ("windows.usb_storage", "last connected", 1),
+        ("windows.usb_storage", "mounted as", 2),
+        ("windows.usb_storage", "named in log", 10),
+    ];
+    assert_eq!(
+        stick,
+        want.map(|(k, l, n)| (k.to_string(), l.to_string(), n))
+    );
+    // The disk fact lists its connections, and a connection points back.
+    let (fact, event): (u128, u128) = db
+        .query_row(
+            "SELECT l.from_id, l.to_id FROM links l JOIN facts f ON f.id = l.from_id \
+             JOIN events e ON e.id = l.to_id WHERE f.subject = ? AND l.label = 'named in log' \
+             ORDER BY e.ts LIMIT 1",
+            [disk],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let explained = af(&["explain", c, &format!("{fact:x}")]);
+    assert!(
+        explained.starts_with(&format!(
+            "fact windows.usb_storage  {fact:032x}\n  {disk}\n"
+        )),
+        "{explained}"
+    );
+    assert_eq!(
+        explained.matches("\nnamed in log  -> ").count(),
+        10,
+        "{explained}"
+    );
+    assert!(
+        explained.contains(&format!(
+            "\nis storage of  <- fact windows.usb_device: {usb}  "
+        )),
+        "{explained}"
+    );
+    assert!(
+        explained.contains("\nmounted as  -> fact windows.mounted_device: \\DosDevices\\F:  "),
+        "{explained}"
+    );
+    let explained = af(&["explain", c, &format!("{event:x}")]);
+    assert!(
+        explained.contains(&format!(
+            "\nnamed in log  <- fact windows.usb_storage: {disk}  {fact:032x}  [strong]"
+        )),
+        "{explained}"
+    );
     std::fs::remove_dir_all(&parent).unwrap();
 }

@@ -69,6 +69,16 @@ pub struct StoredEvent {
     pub ts: Option<i64>,
 }
 
+/// A fact the project holds (L8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFact {
+    pub id: u128,
+    pub kind: String,
+    pub subject: String,
+    /// Its values as JSON text.
+    pub attrs: Option<String>,
+}
+
 /// Read access to the project for Correlate: records by kind, and their events.
 pub trait Stored {
     /// Every record of `kind` on `system`.
@@ -82,6 +92,18 @@ pub trait Stored {
 
     /// These records, by ID.
     fn records_of(&self, ids: &[u128]) -> std::io::Result<Vec<StoredRecord>>;
+
+    /// The records of `kind` on `system` whose content holds any of `words`, ignoring case (L8):
+    /// a first cut, which the plugin checks itself.
+    fn records_mentioning(
+        &self,
+        system: SystemId,
+        kind: &Kind,
+        words: &[String],
+    ) -> std::io::Result<Vec<StoredRecord>>;
+
+    /// Every fact of these kinds on `system`, by ID (L8).
+    fn facts(&self, system: SystemId, kinds: &[&str]) -> std::io::Result<Vec<StoredFact>>;
 }
 
 /// Opens the bytes of an artifact.

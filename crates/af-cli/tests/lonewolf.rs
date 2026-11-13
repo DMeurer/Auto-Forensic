@@ -144,6 +144,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::sessions::Sessions,
             &af_windows::logons::Logons,
             &af_windows::moved::MovedTo,
+            &af_windows::usb_connections::UsbConnections,
         ],
         &profiles,
     )
@@ -638,6 +639,10 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         // L11: journal renames into another folder, without the 6,226 within WinSxS.
         ("link windows.moved_to", 446),
         ("link windows.session.ended", 1),
+        // L8: USB devices to their 41 registry times, 2 disks to their USB devices and 3 mounted
+        // names, and to the 77 log entries naming them.
+        ("link windows.usb", 46),
+        ("link windows.usb_connections", 77),
     ];
     assert_eq!(made, want.map(|(k, n)| (k.to_string(), n)));
 
