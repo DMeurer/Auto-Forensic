@@ -13,6 +13,19 @@ use af_core::names::Kind;
 use duckdb::params;
 use std::fmt;
 
+/// A stored group, as `af explain` shows it.
+#[derive(Debug)]
+pub struct GroupRow {
+    pub id: GroupId,
+    pub kind: String,
+    pub reason: String,
+    /// Its members' earliest and latest time key, as of the last range refresh.
+    pub ts_min: Option<i64>,
+    pub ts_max: Option<i64>,
+    pub created_by: String,
+    pub members: u64,
+}
+
 #[derive(Debug)]
 pub enum GroupError {
     /// A group needs a reason.
@@ -148,6 +161,39 @@ impl Store {
             [group.0],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
+    }
+
+    /// One group with its member count (L7), or `None` when there is no such group.
+    pub fn group_by_id(&self, id: u128) -> Result<Option<GroupRow>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT g.kind, g.reason, g.ts_min, g.ts_max, g.created_by, \
+             (SELECT count(*) FROM group_members m WHERE m.grp = g.id) \
+             FROM groups g WHERE g.id = ?",
+        )?;
+        let mut rows = stmt.query_map([id], |r| {
+            Ok(GroupRow {
+                id: GroupId(id),
+                kind: r.get(0)?,
+                reason: r.get(1)?,
+                ts_min: r.get(2)?,
+                ts_max: r.get(3)?,
+                created_by: r.get(4)?,
+                members: r.get(5)?,
+            })
+        })?;
+        rows.next().transpose()
+    }
+
+    /// A group's direct members as kind (`event`, `group`, `fact`) and ID: events by time, then
+    /// the rest (L7).
+    pub fn members_of(&self, group: GroupId) -> Result<Vec<(String, u128)>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.member_kind, m.member_id FROM group_members m \
+             LEFT JOIN events e ON m.member_kind = 'event' AND e.id = m.member_id \
+             WHERE m.grp = ? ORDER BY e.ts NULLS LAST, m.member_kind, m.member_id",
+        )?;
+        let rows = stmt.query_map([group.0], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     /// The groups an event, group or fact is a direct member of.

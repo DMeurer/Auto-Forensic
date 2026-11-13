@@ -6,7 +6,7 @@
 //! shared folder and runs again: the stick is its own `none` system and nothing else changes. It
 //! is skipped when the image is missing, since course images never go into the repository.
 
-use af_core::ids::{Endpoint, EventId};
+use af_core::ids::{Endpoint, EventId, GroupId};
 use af_store::Store;
 use std::path::Path;
 use std::process::Command;
@@ -143,8 +143,9 @@ fn project_canary() {
     );
     assert!(links(&db).is_empty(), "no plugin makes links here");
 
-    // The analyst tags an event and links two of their own (L2: both survive the rebuild).
-    let tagged = {
+    // The analyst tags an event and links two of their own (L2: both survive the rebuild), and
+    // links the second event to a hive group (L7).
+    let (tagged, noted) = {
         let mut s = Store::open(&db, 256).unwrap();
         let events = s.events().unwrap();
         let id = events[0].id;
@@ -158,7 +159,15 @@ fn project_canary() {
             af_store::rebuild::USER,
         )
         .unwrap();
-        id
+        s.add_link(
+            8,
+            "user.note",
+            &Endpoint::Event(EventId(events[1].id)),
+            &Endpoint::Group(GroupId(hive_groups[0].0)),
+            af_store::rebuild::USER,
+        )
+        .unwrap();
+        (id, events[1].id)
     };
 
     // One more hive, and run again.
@@ -184,8 +193,11 @@ fn project_canary() {
     drop(s);
     assert_eq!(
         links(&db),
-        [(7, af_store::rebuild::USER.to_string())],
-        "the analyst's link is kept"
+        [
+            (7, af_store::rebuild::USER.to_string()),
+            (8, af_store::rebuild::USER.to_string())
+        ],
+        "the analyst's links are kept"
     );
     let groups_after = groups(&db);
     assert_eq!(groups_after.len(), 3, "groups rebuilt for all three hives");
@@ -198,6 +210,39 @@ fn project_canary() {
     assert_eq!(link_lines.len(), 1, "{explained}");
     assert!(
         link_lines[0].starts_with("user.note  <- ") && link_lines[0].contains("[strong]"),
+        "{explained}"
+    );
+
+    // L7: the link to the group shows from its source event, on the group, and on each member
+    // as coming through the group.
+    let (group, reason, members) = &hive_groups[0];
+    let group_line = format!("group windows.hive.root: {reason}  {group:032x}");
+    let explained = af(&["explain", c, &format!("{noted:x}")]);
+    assert!(
+        explained.contains(&format!("user.note  -> {group_line}  [strong]")),
+        "{explained}"
+    );
+    let explained = af(&["explain", c, &format!("{group:x}")]);
+    assert!(
+        explained.starts_with(&format!(
+            "group windows.hive.root  {group:032x}\n  {reason}\n"
+        )),
+        "{explained}"
+    );
+    let member_lines = explained
+        .lines()
+        .filter(|l| l.starts_with("  member "))
+        .count();
+    assert_eq!(member_lines as i64, *members, "{explained}");
+    assert!(explained.contains("\nuser.note  <- "), "{explained}");
+    let first = Store::open_read_only(&db)
+        .unwrap()
+        .members_of(GroupId(*group))
+        .unwrap()[0]
+        .1;
+    let explained = af(&["explain", c, &format!("{first:x}")]);
+    assert!(
+        explained.contains(&format!("\nin group windows.hive.root: {reason} ({members} members)  {group:032x}\n  via group: user.note  <- ")),
         "{explained}"
     );
 

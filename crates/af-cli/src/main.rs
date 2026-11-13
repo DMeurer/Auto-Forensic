@@ -92,9 +92,10 @@ enum Command {
         #[arg(long)]
         limit: Option<u64>,
     },
-    /// One event and its links, each with its label first, strong before possible (L1). The
-    /// event ID is the last column of `af events`.
-    Explain { project: PathBuf, event: String },
+    /// One event or group and its links, each with its label first, strong before possible
+    /// (L1), then the groups it is in with their links (L7). The event ID is the last column of
+    /// `af events`; group IDs show in explain.
+    Explain { project: PathBuf, id: String },
 }
 
 #[derive(Subcommand)]
@@ -241,7 +242,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             kind,
             limit,
         } => events(&project, kind.as_deref(), limit, &mut out)?,
-        Command::Explain { project, event } => explain(&project, &event, &mut out)?,
+        Command::Explain { project, id } => explain(&project, &id, &mut out)?,
         Command::Users { project } => {
             let p = Project::open_read_only(&project, wait())?;
             let mut facts = p.store.facts()?;
@@ -442,56 +443,107 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 /// `af events`: the project's maps, then the compiled-in ones (af's, then EvtxECmd's), applied
 /// to each event log record.
-/// `af explain`: the event, then its links, label first.
+/// `af explain`: an event or a group (L7), its links, label first, then the groups it is
+/// directly in, each with the links to and from that group.
 fn explain(
     project: &std::path::Path,
-    event: &str,
+    id: &str,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let id =
-        u128::from_str_radix(event.trim(), 16).map_err(|e| format!("event ID {event}: {e}"))?;
+    use af_core::ids::{Endpoint, EventId, GroupId};
+    let id = u128::from_str_radix(id.trim(), 16).map_err(|e| format!("ID {id}: {e}"))?;
     let p = Project::open_read_only(project, wait())?;
-    let describe = |id: u128| -> Result<String, Box<dyn std::error::Error>> {
-        Ok(match p.store.event_by_id(id)? {
+    let endpoint = if let Some((e, record)) = p.store.event_by_id(id)? {
+        writeln!(out, "{}  {}", describe(&p, "event", id)?, e.meaning)?;
+        if let Some(r) = record {
+            writeln!(out, "  record {r}")?;
+        }
+        Endpoint::Event(EventId(id))
+    } else if let Some(g) = p.store.group_by_id(id)? {
+        writeln!(out, "group {}  {id:032x}", g.kind)?;
+        writeln!(out, "  {}", g.reason)?;
+        if let (Some(a), Some(b)) = (g.ts_min, g.ts_max) {
+            writeln!(out, "  {} to {}", ticks(a), ticks(b))?;
+        }
+        writeln!(out, "  made by {}, {} members", g.created_by, g.members)?;
+        const SHOWN: usize = 20;
+        let members = p.store.members_of(GroupId(id))?;
+        for (kind, m) in members.iter().take(SHOWN) {
+            writeln!(out, "  member {}", describe(&p, kind, *m)?)?;
+        }
+        if members.len() > SHOWN {
+            writeln!(out, "  and {} more", members.len() - SHOWN)?;
+        }
+        Endpoint::Group(GroupId(id))
+    } else {
+        return Err(format!("no event or group {id:x} in this project").into());
+    };
+    if write_links(&p, &endpoint, "", out)? == 0 {
+        writeln!(out, "no links")?;
+    }
+    for g in p.store.groups_of(&endpoint)? {
+        let Some(row) = p.store.group_by_id(g.0)? else {
+            continue;
+        };
+        writeln!(
+            out,
+            "in group {}: {} ({} members)  {:032x}",
+            row.kind, row.reason, row.members, g.0
+        )?;
+        write_links(&p, &Endpoint::Group(g), "  via group: ", out)?;
+    }
+    Ok(())
+}
+
+/// One line for an event (time and kind), a group (kind, reason, ID) or another endpoint.
+fn describe(p: &Project, kind: &str, id: u128) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(match kind {
+        "event" => match p.store.event_by_id(id)? {
             Some((e, _)) => {
                 let time = Time::from_columns(&e.time)
                     .map(|t| t.display())
                     .unwrap_or_default();
                 format!("{time}  {}", e.kind)
             }
-            None => format!("{id:032x}"),
-        })
-    };
-    let Some((e, record)) = p.store.event_by_id(id)? else {
-        return Err(format!("no event {event} in this project").into());
-    };
-    writeln!(out, "{}  {}", describe(id)?, e.meaning)?;
-    if let Some(r) = record {
-        writeln!(out, "  record {r}")?;
-    }
-    let links = p
-        .store
-        .links_of(&af_core::ids::Endpoint::Event(af_core::ids::EventId(id)))?;
-    if links.is_empty() {
-        writeln!(out, "no links")?;
-    }
-    for l in links {
+            None => format!("event {id:032x}"),
+        },
+        "group" => match p.store.group_by_id(id)? {
+            Some(g) => format!("group {}: {}  {id:032x}", g.kind, g.reason),
+            None => format!("group {id:032x}"),
+        },
+        kind => format!("{kind} {id:032x}"),
+    })
+}
+
+/// A time key as a date (100 ns ticks since 1601).
+fn ticks(t: i64) -> String {
+    u64::try_from(t).map_or(t.to_string(), |t| Time::from_ticks_1601(t).display())
+}
+
+/// The links from (`->`) and to (`<-`) one endpoint, each line after `prefix`; how many.
+fn write_links(
+    p: &Project,
+    of: &af_core::ids::Endpoint,
+    prefix: &str,
+    out: &mut dyn Write,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let links = p.store.links_of(of)?;
+    for l in &links {
         let other = match (l.other_kind.as_str(), l.other_id) {
-            ("event", Some(o)) => describe(o)?,
-            (kind, Some(o)) => format!("{kind} {o:032x}"),
+            (kind, Some(o)) => describe(p, kind, o)?,
             (kind, None) => kind.to_string(),
         };
         let arrow = if l.outgoing { "->" } else { "<-" };
         writeln!(
             out,
-            "{}  {arrow} {other}  [{}]  {}: {}",
+            "{prefix}{}  {arrow} {other}  [{}]  {}: {}",
             l.label, l.tier, l.reason, l.key
         )?;
-        if let Some(d) = l.description {
-            writeln!(out, "    {d}")?;
+        if let Some(d) = &l.description {
+            writeln!(out, "{prefix}    {d}")?;
         }
     }
-    Ok(())
+    Ok(links.len())
 }
 
 fn events(
