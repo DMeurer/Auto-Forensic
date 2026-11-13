@@ -215,8 +215,12 @@ impl Store {
         rows.collect()
     }
 
-    /// Tags an event, group, fact or file. Tags are always the analyst's.
-    pub fn add_tag(&mut self, target: &Endpoint, tag: &str) -> Result<(), Error> {
+    /// Tags an event, group, fact or file. Tags are always the analyst's. A tag the target has
+    /// already is not added twice; returns whether it was new.
+    pub fn add_tag(&mut self, target: &Endpoint, tag: &str) -> Result<bool, Error> {
+        if self.tags_of(target)?.iter().any(|t| t == tag) {
+            return Ok(false);
+        }
         let c = target.to_columns();
         self.conn.execute(
             "INSERT INTO tags VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -230,7 +234,31 @@ impl Store {
                 USER
             ],
         )?;
-        Ok(())
+        Ok(true)
+    }
+
+    /// Takes a tag off a target (O1); returns whether it had it.
+    pub fn remove_tag(&mut self, target: &Endpoint, tag: &str) -> Result<bool, Error> {
+        let c = target.to_columns();
+        let n = self.conn.execute(
+            "DELETE FROM tags WHERE target_kind = ? AND target_id IS NOT DISTINCT FROM ? \
+             AND target_system IS NOT DISTINCT FROM ? \
+             AND target_file_scheme IS NOT DISTINCT FROM ? \
+             AND target_file_value IS NOT DISTINCT FROM ? AND tag = ?",
+            params![c.kind, c.id, c.system, c.file_scheme, c.file_value, tag],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Every tag with its target's kind and ID (none for a file), by tag, then kind and ID; only
+    /// `tag` if given (O1).
+    pub fn tags(&self, tag: Option<&str>) -> Result<Vec<(String, String, Option<u128>)>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tag, target_kind, target_id FROM tags WHERE ? IS NULL OR tag = ? \
+             ORDER BY tag, target_kind, target_id",
+        )?;
+        let rows = stmt.query_map(params![tag, tag], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect()
     }
 
     /// The tags on one event, group or fact, in order of name.

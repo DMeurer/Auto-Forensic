@@ -97,6 +97,50 @@ enum Command {
     /// (L1), then the groups it is in with their links (L7). The event ID is the last column of
     /// `af events`; group and fact IDs show in explain.
     Explain { project: PathBuf, id: String },
+    /// Tag events, groups and facts, and list them by tag (O1). Tags stay through re-runs.
+    #[command(subcommand)]
+    Tag(TagCommand),
+    /// Dated comments on events, groups and facts (O1). Comments stay through re-runs.
+    #[command(subcommand)]
+    Comment(CommentCommand),
+}
+
+#[derive(Subcommand)]
+enum TagCommand {
+    /// Tag an event, group or fact by its ID (from `af events` or `af explain`).
+    Add {
+        project: PathBuf,
+        id: String,
+        tag: String,
+    },
+    /// Take a tag off an event, group or fact.
+    Remove {
+        project: PathBuf,
+        id: String,
+        tag: String,
+    },
+    /// Every tagged item, by tag; only one tag if given.
+    List {
+        project: PathBuf,
+        tag: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommentCommand {
+    /// Comment on an event, group or fact by its ID; prints the comment's number.
+    Add {
+        project: PathBuf,
+        id: String,
+        text: String,
+    },
+    /// Every comment, oldest first; only those on one item if its ID is given.
+    List {
+        project: PathBuf,
+        id: Option<String>,
+    },
+    /// Remove a comment by its number.
+    Remove { project: PathBuf, no: i64 },
 }
 
 #[derive(Subcommand)]
@@ -244,6 +288,66 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             limit,
         } => events(&project, kind.as_deref(), limit, &mut out)?,
         Command::Explain { project, id } => explain(&project, &id, &mut out)?,
+        Command::Tag(cmd) => match cmd {
+            TagCommand::Add { project, id, tag } => {
+                let mut p = Project::open(&project)?;
+                let target = resolve(&p, &id)?;
+                let new = p.store.add_tag(&target, tag.trim())?;
+                let what = describe_endpoint(&p, &target)?;
+                if new {
+                    writeln!(out, "tagged {tag}: {what}")?;
+                } else {
+                    writeln!(out, "already tagged {tag}: {what}")?;
+                }
+            }
+            TagCommand::Remove { project, id, tag } => {
+                let mut p = Project::open(&project)?;
+                let target = resolve(&p, &id)?;
+                if !p.store.remove_tag(&target, tag.trim())? {
+                    return Err(format!("{id} has no tag {tag:?}").into());
+                }
+                writeln!(out, "removed tag {tag}")?;
+            }
+            TagCommand::List { project, tag } => {
+                let p = Project::open_read_only(&project, wait())?;
+                for (tag, kind, id) in p.store.tags(tag.as_deref())? {
+                    let what = match id {
+                        Some(id) => describe(&p, &kind, id)?,
+                        None => kind,
+                    };
+                    writeln!(out, "{tag}\t{what}")?;
+                }
+            }
+        },
+        Command::Comment(cmd) => match cmd {
+            CommentCommand::Add { project, id, text } => {
+                let mut p = Project::open(&project)?;
+                let target = resolve(&p, &id)?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                let no = p.store.add_comment(&target, &text, now)?;
+                writeln!(out, "comment #{no} on {}", describe_endpoint(&p, &target)?)?;
+            }
+            CommentCommand::List { project, id } => {
+                let p = Project::open_read_only(&project, wait())?;
+                let target = id.map(|id| resolve(&p, &id)).transpose()?;
+                for c in p.store.comments(target.as_ref())? {
+                    let what = match c.target_id {
+                        Some(id) => describe(&p, &c.target_kind, id)?,
+                        None => c.target_kind.clone(),
+                    };
+                    writeln!(out, "#{}  {}  {what}", c.no, unix(c.created_unix))?;
+                    writeln!(out, "    {}", c.text)?;
+                }
+            }
+            CommentCommand::Remove { project, no } => {
+                if !Project::open(&project)?.store.remove_comment(no)? {
+                    return Err(format!("no comment #{no}").into());
+                }
+                writeln!(out, "removed comment #{no}")?;
+            }
+        },
         Command::Users { project } => {
             let p = Project::open_read_only(&project, wait())?;
             let mut facts = p.store.facts()?;
@@ -487,6 +591,20 @@ fn explain(
     } else {
         return Err(format!("no event, group or fact {id:x} in this project").into());
     };
+    // O1: the analyst's tags and comments.
+    let tags = p.store.tags_of(&endpoint)?;
+    if !tags.is_empty() {
+        writeln!(out, "  tags: {}", tags.join(", "))?;
+    }
+    for c in p.store.comments(Some(&endpoint))? {
+        writeln!(
+            out,
+            "  comment #{} ({}): {}",
+            c.no,
+            unix(c.created_unix),
+            c.text
+        )?;
+    }
     if write_links(&p, &endpoint, "", out)? == 0 {
         writeln!(out, "no links")?;
     }
@@ -527,6 +645,38 @@ fn describe(p: &Project, kind: &str, id: u128) -> Result<String, Box<dyn std::er
         },
         kind => format!("{kind} {id:032x}"),
     })
+}
+
+/// An event, group or fact by its hex ID, whichever the project has.
+fn resolve(p: &Project, id: &str) -> Result<af_core::ids::Endpoint, Box<dyn std::error::Error>> {
+    use af_core::ids::{Endpoint, EventId, FactId, GroupId};
+    let n = u128::from_str_radix(id.trim(), 16).map_err(|e| format!("ID {id}: {e}"))?;
+    Ok(if p.store.event_by_id(n)?.is_some() {
+        Endpoint::Event(EventId(n))
+    } else if p.store.group_by_id(n)?.is_some() {
+        Endpoint::Group(GroupId(n))
+    } else if p.store.fact_by_id(n)?.is_some() {
+        Endpoint::Fact(FactId(n))
+    } else {
+        return Err(format!("no event, group or fact {n:x} in this project").into());
+    })
+}
+
+/// [`describe`] for an endpoint.
+fn describe_endpoint(
+    p: &Project,
+    e: &af_core::ids::Endpoint,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let c = e.to_columns();
+    match c.id {
+        Some(id) => describe(p, &c.kind, id),
+        None => Ok(c.kind),
+    }
+}
+
+/// Seconds since 1970 as a UTC time.
+fn unix(secs: i64) -> String {
+    ticks((secs + 11_644_473_600) * 10_000_000)
 }
 
 /// A time key as a date (100 ns ticks since 1601).

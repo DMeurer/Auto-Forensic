@@ -169,6 +169,14 @@ fn project_canary() {
         .unwrap();
         (id, events[1].id)
     };
+    // O1: the same through the CLI: a second tag and a comment.
+    let tagged_hex = format!("{tagged:x}");
+    assert!(af(&["tag", "add", c, &tagged_hex, "check"]).starts_with("tagged check: "));
+    assert!(af(&["tag", "add", c, &tagged_hex, "check"]).starts_with("already tagged check: "));
+    assert!(
+        af(&["comment", "add", c, &tagged_hex, "root written at install"])
+            .starts_with("comment #1 on ")
+    );
 
     // One more hive, and run again.
     af(&["source", "add", c, &software]);
@@ -181,7 +189,7 @@ fn project_canary() {
     let s = Store::open_read_only(&db).unwrap();
     assert_eq!(
         s.tags_of(&Endpoint::Event(EventId(tagged))).unwrap(),
-        ["suspicious"]
+        ["check", "suspicious"]
     );
     let events = s.events().unwrap();
     let root_times = events
@@ -212,6 +220,27 @@ fn project_canary() {
         link_lines[0].starts_with("user.note  <- ") && link_lines[0].contains("[strong]"),
         "{explained}"
     );
+    // O1: tags and the comment survived the run, and explain shows them.
+    assert!(
+        explained.contains("\n  tags: check, suspicious\n"),
+        "{explained}"
+    );
+    assert!(
+        explained.contains("\n  comment #1 (")
+            && explained.contains("): root written at install\n"),
+        "{explained}"
+    );
+    let comments = af(&["comment", "list", c, &tagged_hex]);
+    assert!(
+        comments.starts_with("#1  ") && comments.ends_with("\n    root written at install\n"),
+        "{comments}"
+    );
+    let tags = af(&["tag", "list", c, "check"]);
+    assert_eq!(tags.lines().count(), 1, "{tags}");
+    assert!(tags.starts_with("check\t"), "{tags}");
+    af(&["tag", "remove", c, &tagged_hex, "check"]);
+    af(&["comment", "remove", c, "1"]);
+    assert!(af(&["comment", "list", c]).is_empty());
 
     // L7: the link to the group shows from its source event, on the group, and on each member
     // as coming through the group.

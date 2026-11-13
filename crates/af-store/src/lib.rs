@@ -40,6 +40,7 @@ use af_core::time::TimeColumns;
 use duckdb::{Connection, params};
 use std::path::Path;
 
+pub mod comments;
 pub mod facts;
 pub mod groups;
 pub mod lists;
@@ -124,6 +125,17 @@ CREATE TABLE IF NOT EXISTS run_log (
     system UHUGEINT NOT NULL,
     version UINTEGER NOT NULL,
     inputs VARCHAR NOT NULL
+);
+CREATE TABLE IF NOT EXISTS comments (
+    no BIGINT NOT NULL,
+    target_kind VARCHAR NOT NULL,
+    target_id UHUGEINT,
+    target_system UHUGEINT,
+    target_file_scheme VARCHAR,
+    target_file_value BLOB,
+    text VARCHAR NOT NULL,
+    created_unix BIGINT NOT NULL,
+    created_by VARCHAR NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
     target_kind VARCHAR NOT NULL,
