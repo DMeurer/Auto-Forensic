@@ -381,7 +381,9 @@ mod tests {
         store
             .add_group(GroupId(40), &kind, "same site", "test.usn")
             .unwrap();
-        store.add_member(GroupId(40), &one, "test.usn").unwrap();
+        store
+            .add_member(GroupId(40), &one, None, "test.usn")
+            .unwrap();
         // test.usn extracts again for system 7 only.
         store
             .clear_links_and_groups_of("test.usn", Some(7))

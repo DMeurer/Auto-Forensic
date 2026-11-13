@@ -154,7 +154,10 @@ impl Plugin for HiveRootKeys {
             let event = EventId::derive(&source, &a.locator, None, &ev_kind, &meaning, 0);
             let facts = names.iter().map(|name| {
                 let subject = format!("{}:{name}", a.kind);
-                Endpoint::Fact(FactId::derive(&source, &a.locator, &fact_kind, &subject))
+                (
+                    Endpoint::Fact(FactId::derive(&source, &a.locator, &fact_kind, &subject)),
+                    format!("root key {name}"),
+                )
             });
             ctx.sink.group(
                 &self.manifest().id,
@@ -167,9 +170,12 @@ impl Plugin for HiveRootKeys {
                         if names.len() == 1 { "" } else { "s" },
                         a.kind
                     ),
-                    members: std::iter::once(Endpoint::Event(event))
-                        .chain(facts)
-                        .collect(),
+                    members: std::iter::once((
+                        Endpoint::Event(event),
+                        "the root key's last write".to_string(),
+                    ))
+                    .chain(facts)
+                    .collect(),
                 },
             );
             n += 1;

@@ -93,7 +93,11 @@ impl Plugin for Logons {
                     id: GroupId(derive(g.anchor, &kind, g.kind)),
                     kind,
                     reason: g.reason.clone(),
-                    members: g.members.iter().copied().map(Endpoint::Event).collect(),
+                    members: g
+                        .members
+                        .iter()
+                        .map(|(e, why)| (Endpoint::Event(*e), why.clone()))
+                        .collect(),
                 },
             );
         }
@@ -142,7 +146,8 @@ struct Group<'a> {
     anchor: &'a str,
     kind: &'static str,
     reason: String,
-    members: Vec<EventId>,
+    /// Each member with why it is there (O8).
+    members: Vec<(EventId, String)>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -281,7 +286,28 @@ fn find<'a>(read: &[Read<'a>], sam: &[Sam]) -> Found<'a> {
                 if n == 1 { "" } else { "s" },
                 info[first].user
             ),
-            members: members.iter().map(|&i| read[i].id).collect(),
+            members: members
+                .chunks(2)
+                .flat_map(|p| {
+                    let (s, e) = (p[0], p[1]);
+                    let lid = read[s].logon_id.as_deref().unwrap_or_default();
+                    let end = if read[e].event == 4647 {
+                        "user logged off"
+                    } else {
+                        "session ended"
+                    };
+                    [
+                        (read[s].id, format!("logon {lid} at {}", clock(read[s].ts))),
+                        (
+                            read[e].id,
+                            format!(
+                                "{end} {:.1} s after logon {lid}",
+                                (read[e].ts - read[s].ts) as f64 / 1e7
+                            ),
+                        ),
+                    ]
+                })
+                .collect(),
         });
     }
 
@@ -303,7 +329,17 @@ fn find<'a>(read: &[Read<'a>], sam: &[Sam]) -> Found<'a> {
                 anchor: read[a].locator,
                 kind: "windows.logon.tokens",
                 reason: format!("logon of {} (normal and elevated token)", al.user),
-                members: vec![read[a].id, read[b].id],
+                members: [a, b]
+                    .map(|t| {
+                        let which = if info[t].elevated {
+                            "elevated token"
+                        } else {
+                            "normal token"
+                        };
+                        let lid = read[t].logon_id.as_deref().unwrap_or_default();
+                        (read[t].id, format!("{which}, logon ID {lid}"))
+                    })
+                    .into(),
             });
         }
     }
@@ -459,13 +495,32 @@ mod tests {
         let groups: Vec<(&str, Vec<u128>)> = found
             .groups
             .iter()
-            .map(|g| (g.kind, g.members.iter().map(|m| m.0).collect()))
+            .map(|g| (g.kind, g.members.iter().map(|m| m.0.0).collect()))
             .collect();
         assert_eq!(
             groups,
             [
                 ("windows.logon.short", vec![4, 5]),
                 ("windows.logon.tokens", vec![2, 3]),
+            ]
+        );
+        // O8: why each member is there.
+        let whys: Vec<Vec<&str>> = found
+            .groups
+            .iter()
+            .map(|g| g.members.iter().map(|m| m.1.as_str()).collect())
+            .collect();
+        assert_eq!(
+            whys,
+            [
+                vec![
+                    "logon 0x20 at 00:00:07.000",
+                    "session ended 0.0 s after logon 0x20"
+                ],
+                vec![
+                    "normal token, logon ID 0x10",
+                    "elevated token, logon ID 0x11"
+                ],
             ]
         );
     }

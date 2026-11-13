@@ -103,9 +103,14 @@ impl Plugin for Sessions {
                         text(logon_type).unwrap_or_default(),
                         logon.logon_id.as_deref().unwrap_or_default(),
                     ),
-                    members: std::iter::once(logon.id)
-                        .chain(g.processes.iter().map(|&p| read[p].id))
-                        .map(Endpoint::Event)
+                    members: std::iter::once((Endpoint::Event(logon.id), "the logon".to_string()))
+                        .chain(g.processes.iter().map(|&p| {
+                            let exe = text(&read[p].data["NewProcessName"]).unwrap_or_default();
+                            (
+                                Endpoint::Event(read[p].id),
+                                format!("started {exe} under its logon ID"),
+                            )
+                        }))
                         .collect(),
                 },
             );

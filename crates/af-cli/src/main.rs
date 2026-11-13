@@ -103,6 +103,69 @@ enum Command {
     /// Dated comments on events, groups and facts (O1). Comments stay through re-runs.
     #[command(subcommand)]
     Comment(CommentCommand),
+    /// Named lists of events and groups, such as "Report" (O8). Lists stay through re-runs.
+    #[command(subcommand)]
+    List(ListCommand),
+    /// Groups: show why each member is there, list them, and make your own (O8).
+    #[command(subcommand)]
+    Group(GroupCommand),
+}
+
+#[derive(Subcommand)]
+enum ListCommand {
+    /// Make a list (a list with this name already is kept).
+    New { project: PathBuf, name: String },
+    /// Add events or groups by ID, or copy in a group's members or another list's entries.
+    Add {
+        project: PathBuf,
+        name: String,
+        ids: Vec<String>,
+        /// Copy this group's event and group members.
+        #[arg(long, value_name = "GROUP")]
+        from_group: Option<String>,
+        /// Copy this list's entries.
+        #[arg(long, value_name = "LIST")]
+        from_list: Option<String>,
+    },
+    /// Take events or groups off a list; they stay in the project.
+    Remove {
+        project: PathBuf,
+        name: String,
+        ids: Vec<String>,
+    },
+    /// A list's entries in the order they were added.
+    Show { project: PathBuf, name: String },
+    /// Every list with its number of entries.
+    All { project: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum GroupCommand {
+    /// Make your own group with a reason; prints its ID.
+    New { project: PathBuf, reason: String },
+    /// Add events, facts or groups to your own group.
+    Add {
+        project: PathBuf,
+        group: String,
+        ids: Vec<String>,
+        /// Why these members are there.
+        #[arg(long)]
+        why: Option<String>,
+    },
+    /// Take members out of your own group; they stay in the project.
+    Remove {
+        project: PathBuf,
+        group: String,
+        ids: Vec<String>,
+    },
+    /// A group's reason and every member with why it is there.
+    Show { project: PathBuf, group: String },
+    /// Every group, by kind and start; only one kind if given.
+    List {
+        project: PathBuf,
+        #[arg(long)]
+        kind: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -319,6 +382,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Command::List(cmd) => list_command(cmd, &mut out)?,
+        Command::Group(cmd) => group_command(cmd, &mut out)?,
         Command::Comment(cmd) => match cmd {
             CommentCommand::Add { project, id, text } => {
                 let mut p = Project::open(&project)?;
@@ -565,20 +630,7 @@ fn explain(
         }
         Endpoint::Event(EventId(id))
     } else if let Some(g) = p.store.group_by_id(id)? {
-        writeln!(out, "group {}  {id:032x}", g.kind)?;
-        writeln!(out, "  {}", g.reason)?;
-        if let (Some(a), Some(b)) = (g.ts_min, g.ts_max) {
-            writeln!(out, "  {} to {}", ticks(a), ticks(b))?;
-        }
-        writeln!(out, "  made by {}, {} members", g.created_by, g.members)?;
-        const SHOWN: usize = 20;
-        let members = p.store.members_of(GroupId(id))?;
-        for (kind, m) in members.iter().take(SHOWN) {
-            writeln!(out, "  member {}", describe(&p, kind, *m)?)?;
-        }
-        if members.len() > SHOWN {
-            writeln!(out, "  and {} more", members.len() - SHOWN)?;
-        }
+        write_group(&p, &g, Some(20), out)?;
         Endpoint::Group(GroupId(id))
     } else if let Some(f) = p.store.fact_by_id(id)? {
         writeln!(out, "fact {}  {id:032x}", f.kind)?;
@@ -645,6 +697,203 @@ fn describe(p: &Project, kind: &str, id: u128) -> Result<String, Box<dyn std::er
         },
         kind => format!("{kind} {id:032x}"),
     })
+}
+
+/// A group's header, then its members (at most `limit`), each with why it is there first (O8).
+fn write_group(
+    p: &Project,
+    g: &af_store::groups::GroupRow,
+    limit: Option<usize>,
+    out: &mut dyn Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    writeln!(out, "group {}  {:032x}", g.kind, g.id.0)?;
+    writeln!(out, "  {}", g.reason)?;
+    if let (Some(a), Some(b)) = (g.ts_min, g.ts_max) {
+        writeln!(out, "  {} to {}", ticks(a), ticks(b))?;
+    }
+    writeln!(out, "  made by {}, {} members", g.created_by, g.members)?;
+    let members = p.store.members_of(g.id)?;
+    let shown = limit.unwrap_or(members.len());
+    for (kind, m, why) in members.iter().take(shown) {
+        let why = why.as_deref().unwrap_or("member");
+        writeln!(out, "  {why}:  {}", describe(p, kind, *m)?)?;
+    }
+    if members.len() > shown {
+        writeln!(out, "  and {} more", members.len() - shown)?;
+    }
+    Ok(())
+}
+
+/// `af list` (O8).
+fn list_command(cmd: ListCommand, out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
+    use af_core::ids::{Endpoint, EventId, GroupId};
+    use af_store::rebuild::USER;
+    let named = |p: &Project, name: &str| -> Result<u128, Box<dyn std::error::Error>> {
+        p.store
+            .list_id(name)?
+            .ok_or_else(|| format!("no list {name:?}").into())
+    };
+    match cmd {
+        ListCommand::New { project, name } => {
+            Project::open(&project)?.store.create_list(&name, USER)?;
+            writeln!(out, "list {name}")?;
+        }
+        ListCommand::Add {
+            project,
+            name,
+            ids,
+            from_group,
+            from_list,
+        } => {
+            let mut p = Project::open(&project)?;
+            let list = named(&p, &name)?;
+            let mut items = ids
+                .iter()
+                .map(|id| resolve(&p, id))
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(g) = from_group {
+                let Endpoint::Group(g) = resolve(&p, &g)? else {
+                    return Err(format!("{g} is not a group").into());
+                };
+                for (kind, id, _) in p.store.members_of(g)? {
+                    match kind.as_str() {
+                        "event" => items.push(Endpoint::Event(EventId(id))),
+                        "group" => items.push(Endpoint::Group(GroupId(id))),
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(other) = from_list {
+                let other = named(&p, &other)?;
+                items.extend(p.store.list_entries(other)?.into_iter().map(|e| e.member));
+            }
+            let (mut added, mut skipped) = (0, 0);
+            for item in &items {
+                if p.store.add_to_list(list, item, USER)? {
+                    added += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            writeln!(
+                out,
+                "{added} added to {name}, {skipped} already there or not an event or group"
+            )?;
+        }
+        ListCommand::Remove { project, name, ids } => {
+            let mut p = Project::open(&project)?;
+            let list = named(&p, &name)?;
+            let mut n = 0;
+            for id in &ids {
+                let item = resolve(&p, id)?;
+                n += usize::from(p.store.remove_from_list(list, &item)?);
+            }
+            writeln!(out, "{n} removed from {name}")?;
+        }
+        ListCommand::Show { project, name } => {
+            let p = Project::open_read_only(&project, wait())?;
+            for e in p.store.list_entries(named(&p, &name)?)? {
+                writeln!(
+                    out,
+                    "{}  added {} by {}",
+                    describe_endpoint(&p, &e.member)?,
+                    unix(e.added_unix),
+                    e.created_by
+                )?;
+            }
+        }
+        ListCommand::All { project } => {
+            let p = Project::open_read_only(&project, wait())?;
+            for name in p.store.lists()? {
+                let n = p.store.list_entries(named(&p, &name)?)?.len();
+                writeln!(out, "{name}\t{n} entries")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `af group` (O8). Only the analyst's groups change: rules rebuild theirs every run.
+fn group_command(cmd: GroupCommand, out: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
+    use af_core::ids::{Endpoint, GroupId};
+    use af_store::rebuild::USER;
+    let own = |p: &Project, id: &str| -> Result<GroupId, Box<dyn std::error::Error>> {
+        let Endpoint::Group(g) = resolve(p, id)? else {
+            return Err(format!("{id} is not a group").into());
+        };
+        let row = p.store.group_by_id(g.0)?.expect("resolved");
+        if row.created_by != USER {
+            return Err(format!(
+                "group {id} was made by {}, which remakes it every run; make your own with `af group new`",
+                row.created_by
+            )
+            .into());
+        }
+        Ok(g)
+    };
+    match cmd {
+        GroupCommand::New { project, reason } => {
+            let mut p = Project::open(&project)?;
+            let id = GroupId(SourceId::new_random().0);
+            p.store.add_group(
+                id,
+                &Kind::new("user.group").expect("valid kind"),
+                &reason,
+                USER,
+            )?;
+            writeln!(out, "group {:032x}", id.0)?;
+        }
+        GroupCommand::Add {
+            project,
+            group,
+            ids,
+            why,
+        } => {
+            let mut p = Project::open(&project)?;
+            let g = own(&p, &group)?;
+            for id in &ids {
+                let m = resolve(&p, id)?;
+                p.store.add_member(g, &m, why.as_deref(), USER)?;
+            }
+            p.store.refresh_group_ranges()?;
+            writeln!(out, "{} added to group {:032x}", ids.len(), g.0)?;
+        }
+        GroupCommand::Remove {
+            project,
+            group,
+            ids,
+        } => {
+            let mut p = Project::open(&project)?;
+            let g = own(&p, &group)?;
+            let mut n = 0;
+            for id in &ids {
+                let m = resolve(&p, id)?;
+                n += usize::from(p.store.remove_member(g, &m)?);
+            }
+            p.store.refresh_group_ranges()?;
+            writeln!(out, "{n} removed from group {:032x}", g.0)?;
+        }
+        GroupCommand::Show { project, group } => {
+            let p = Project::open_read_only(&project, wait())?;
+            let Endpoint::Group(g) = resolve(&p, &group)? else {
+                return Err(format!("{group} is not a group").into());
+            };
+            let row = p.store.group_by_id(g.0)?.expect("resolved");
+            write_group(&p, &row, None, out)?;
+        }
+        GroupCommand::List { project, kind } => {
+            let p = Project::open_read_only(&project, wait())?;
+            for g in p.store.groups(kind.as_deref())? {
+                let start = g.ts_min.map(ticks).unwrap_or_default();
+                writeln!(
+                    out,
+                    "{:032x}\t{}\t{}\t{} members\t{}",
+                    g.id.0, g.kind, start, g.members, g.reason
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An event, group or fact by its hex ID, whichever the project has.

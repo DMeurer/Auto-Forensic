@@ -97,15 +97,22 @@ impl Plugin for SameFile {
         }
         let mut n = 0;
         for f in &found {
-            let sources: Vec<&Vec<Endpoint>> = std::iter::once(f.entry)
-                .chain(f.lnks.iter().copied())
-                .chain(f.prefetch.iter().copied())
-                .filter_map(|r| by_record.get(&r))
+            let sources: Vec<(&Vec<Endpoint>, &str)> = std::iter::once((f.entry, "its $MFT entry"))
+                .chain(f.lnks.iter().map(|&r| (r, "a shortcut to it")))
+                .chain(
+                    f.prefetch
+                        .iter()
+                        .map(|&r| (r, "its program's Prefetch file")),
+                )
+                .filter_map(|(r, why)| Some((by_record.get(&r)?, why)))
                 .collect();
             if sources.len() < 2 {
                 continue;
             }
-            let members: Vec<Endpoint> = sources.into_iter().flatten().cloned().collect();
+            let members: Vec<(Endpoint, String)> = sources
+                .into_iter()
+                .flat_map(|(events, why)| events.iter().map(move |e| (e.clone(), why.to_string())))
+                .collect();
             let (_, volume) = volumes
                 .iter()
                 .find(|(_, a)| f.locator.starts_with(&a.locator.to_string()))

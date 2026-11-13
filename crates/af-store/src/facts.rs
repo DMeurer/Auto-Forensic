@@ -148,7 +148,7 @@ mod tests {
             USER,
         )
         .unwrap();
-        s.add_member(GroupId(9), &f, USER).unwrap();
+        s.add_member(GroupId(9), &f, None, USER).unwrap();
         s.add_tag(&f, "suspect").unwrap();
         assert_eq!(s.groups_of(&f).unwrap(), [GroupId(9)]);
 

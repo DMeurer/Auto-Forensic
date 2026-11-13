@@ -177,6 +177,31 @@ fn project_canary() {
         af(&["comment", "add", c, &tagged_hex, "root written at install"])
             .starts_with("comment #1 on ")
     );
+    // O8: an own group with a why for its member, and a list copied from it plus one event.
+    let own_group = af(&["group", "new", c, "checked by hand"])
+        .trim()
+        .strip_prefix("group ")
+        .unwrap()
+        .to_string();
+    af(&[
+        "group",
+        "add",
+        c,
+        &own_group,
+        &tagged_hex,
+        "--why",
+        "the tagged one",
+    ]);
+    af(&["list", "new", c, "Report"]);
+    af(&[
+        "list",
+        "add",
+        c,
+        "Report",
+        &format!("{noted:x}"),
+        "--from-group",
+        &own_group,
+    ]);
 
     // One more hive, and run again.
     af(&["source", "add", c, &software]);
@@ -208,7 +233,11 @@ fn project_canary() {
         "the analyst's links are kept"
     );
     let groups_after = groups(&db);
-    assert_eq!(groups_after.len(), 3, "groups rebuilt for all three hives");
+    assert_eq!(
+        groups_after.len(),
+        4,
+        "groups rebuilt for all three hives, and the analyst's own (O8)"
+    );
     for g in &hive_groups {
         assert!(groups_after.contains(g), "rebuilt groups keep their IDs");
     }
@@ -258,17 +287,40 @@ fn project_canary() {
         )),
         "{explained}"
     );
+    // O8: each member says why it is there: the root's last write, then each root key.
     let member_lines = explained
         .lines()
-        .filter(|l| l.starts_with("  member "))
+        .filter(|l| l.starts_with("  root key ") || l.starts_with("  the root key's last write:  "))
         .count();
     assert_eq!(member_lines as i64, *members, "{explained}");
+    let shown = af(&["group", "show", c, &format!("{group:x}")]);
+    assert!(explained.starts_with(&shown), "{shown}\n{explained}");
     assert!(explained.contains("\nuser.note  <- "), "{explained}");
     let first = Store::open_read_only(&db)
         .unwrap()
         .members_of(GroupId(*group))
         .unwrap()[0]
         .1;
+    // O8: the analyst's group and list from before the run are still there.
+    let own = af(&["group", "show", c, &own_group]);
+    assert!(
+        own.starts_with(&format!(
+            "group user.group  {own_group}\n  checked by hand\n"
+        )),
+        "{own}"
+    );
+    assert!(own.contains("\n  the tagged one:  "), "{own}");
+    assert_eq!(af(&["list", "all", c]), "Report\t2 entries\n");
+    // A rule's group isn't the analyst's to change: the rule remakes it every run.
+    let refused = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["group", "add", c, &format!("{group:x}"), &tagged_hex])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("remakes it every run"),
+        "{refused:?}"
+    );
     let explained = af(&["explain", c, &format!("{first:x}")]);
     assert!(
         explained.contains(&format!("\nin group windows.hive.root: {reason} ({members} members)  {group:032x}\n  via group: user.note  <- ")),

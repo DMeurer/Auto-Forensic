@@ -33,8 +33,9 @@ impl Plugin for BrowserHistory {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("browser.history").expect("valid kind"),
-            // 2: search terms as facts and session groups (B2).
-            version: 2,
+            // 2: search terms as facts and session groups (B2). 3: why each session member is
+            // there (O8).
+            version: 3,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: INPUTS
@@ -382,7 +383,20 @@ impl Out<'_, '_> {
                         run.len(),
                         if run.len() == 1 { "" } else { "s" }
                     ),
-                    members: run.iter().map(|(_, _, e)| Endpoint::Event(*e)).collect(),
+                    members: run
+                        .iter()
+                        .enumerate()
+                        .map(|(k, (_, t, e))| {
+                            let why = match k {
+                                0 => format!("first event at {host}"),
+                                _ => match (t - run[k - 1].1) / 10_000_000 {
+                                    s @ 0..120 => format!("{s} s after the one before"),
+                                    s => format!("{} min after the one before", s / 60),
+                                },
+                            };
+                            (Endpoint::Event(*e), why)
+                        })
+                        .collect(),
                 },
             );
             start = i;

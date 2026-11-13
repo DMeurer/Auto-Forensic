@@ -212,8 +212,9 @@ pub struct NewGroup {
     pub kind: Kind,
     /// Why the members belong together; a group always says.
     pub reason: String,
-    /// Events, facts or groups; never files.
-    pub members: Vec<Endpoint>,
+    /// Events, facts or groups, never files, each with why it is there (O8): "logoff 08:48:34",
+    /// "elevated token", "root key Software".
+    pub members: Vec<(Endpoint, String)>,
 }
 
 /// Receives what plugins produce. The project's spool (C0b) is the real one; `emit` is the

@@ -83,11 +83,13 @@ impl Store {
         Ok(())
     }
 
-    /// Adds a member. A group as member is refused if it is `group` or contains it.
+    /// Adds a member, with why it is there (O8). A group as member is refused if it is `group`
+    /// or contains it.
     pub fn add_member(
         &mut self,
         group: GroupId,
         member: &Endpoint,
+        why: Option<&str>,
         created_by: &str,
     ) -> Result<(), GroupError> {
         let (kind, id) = match member {
@@ -112,8 +114,8 @@ impl Store {
             Endpoint::File { .. } => return Err(GroupError::FileMember),
         };
         self.conn.execute(
-            "INSERT INTO group_members VALUES (?, ?, ?, ?)",
-            params![group.0, kind, id, created_by],
+            "INSERT INTO group_members VALUES (?, ?, ?, ?, ?)",
+            params![group.0, kind, id, created_by, why],
         )?;
         Ok(())
     }
@@ -184,15 +186,46 @@ impl Store {
         rows.next().transpose()
     }
 
-    /// A group's direct members as kind (`event`, `group`, `fact`) and ID: events by time, then
-    /// the rest (L7).
-    pub fn members_of(&self, group: GroupId) -> Result<Vec<(String, u128)>, Error> {
+    /// A group's direct members as kind (`event`, `group`, `fact`), ID and why it is there
+    /// (O8): events by time, then the rest (L7).
+    pub fn members_of(&self, group: GroupId) -> Result<Vec<(String, u128, Option<String>)>, Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT m.member_kind, m.member_id FROM group_members m \
+            "SELECT m.member_kind, m.member_id, m.why FROM group_members m \
              LEFT JOIN events e ON m.member_kind = 'event' AND e.id = m.member_id \
              WHERE m.grp = ? ORDER BY e.ts NULLS LAST, m.member_kind, m.member_id",
         )?;
-        let rows = stmt.query_map([group.0], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map([group.0], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect()
+    }
+
+    /// Takes a member out of a group (O8); returns whether it was in it.
+    pub fn remove_member(&mut self, group: GroupId, member: &Endpoint) -> Result<bool, Error> {
+        let c = member.to_columns();
+        let n = self.conn.execute(
+            "DELETE FROM group_members WHERE grp = ? AND member_kind = ? AND member_id = ?",
+            params![group.0, c.kind, c.id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Every group, by kind and start; only `kind` if given (O8).
+    pub fn groups(&self, kind: Option<&str>) -> Result<Vec<GroupRow>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT g.id, g.kind, g.reason, g.ts_min, g.ts_max, g.created_by, \
+             (SELECT count(*) FROM group_members m WHERE m.grp = g.id) \
+             FROM groups g WHERE ? IS NULL OR g.kind = ? ORDER BY g.kind, g.ts_min NULLS LAST, g.id",
+        )?;
+        let rows = stmt.query_map(params![kind, kind], |r| {
+            Ok(GroupRow {
+                id: GroupId(r.get(0)?),
+                kind: r.get(1)?,
+                reason: r.get(2)?,
+                ts_min: r.get(3)?,
+                ts_max: r.get(4)?,
+                created_by: r.get(5)?,
+                members: r.get(6)?,
+            })
+        })?;
         rows.collect()
     }
 
@@ -263,8 +296,13 @@ mod tests {
         for g in [10, 11] {
             s.add_group(GroupId(g), &kind(), "same program run", "test.plugin")
                 .unwrap();
-            s.add_member(GroupId(g), &Endpoint::Event(EventId(1)), "test.plugin")
-                .unwrap();
+            s.add_member(
+                GroupId(g),
+                &Endpoint::Event(EventId(1)),
+                None,
+                "test.plugin",
+            )
+            .unwrap();
         }
         assert_eq!(
             s.groups_of(&Endpoint::Event(EventId(1))).unwrap(),
@@ -280,14 +318,14 @@ mod tests {
         }
         let g = |n| Endpoint::Group(GroupId(n));
         assert!(matches!(
-            s.add_member(GroupId(1), &g(1), USER),
+            s.add_member(GroupId(1), &g(1), None, USER),
             Err(GroupError::Loop { .. })
         ));
-        s.add_member(GroupId(1), &g(2), USER).unwrap();
-        s.add_member(GroupId(2), &g(3), USER).unwrap();
+        s.add_member(GroupId(1), &g(2), None, USER).unwrap();
+        s.add_member(GroupId(2), &g(3), None, USER).unwrap();
         // 3 is inside 2 inside 1, so 1 can't go inside 3.
         assert!(matches!(
-            s.add_member(GroupId(3), &g(1), USER),
+            s.add_member(GroupId(3), &g(1), None, USER),
             Err(GroupError::Loop { .. })
         ));
         // Files and reasonless groups are refused too.
@@ -299,7 +337,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            s.add_member(GroupId(1), &file, USER),
+            s.add_member(GroupId(1), &file, None, USER),
             Err(GroupError::FileMember)
         ));
         assert!(matches!(
@@ -323,14 +361,14 @@ mod tests {
         s.add_group(GroupId(3), &kind(), "only timeless members", USER)
             .unwrap();
         for e in [1, 2, 3] {
-            s.add_member(GroupId(1), &Endpoint::Event(EventId(e)), USER)
+            s.add_member(GroupId(1), &Endpoint::Event(EventId(e)), None, USER)
                 .unwrap();
         }
-        s.add_member(GroupId(1), &Endpoint::Fact(FactId(9)), USER)
+        s.add_member(GroupId(1), &Endpoint::Fact(FactId(9)), None, USER)
             .unwrap();
-        s.add_member(GroupId(2), &Endpoint::Event(EventId(4)), USER)
+        s.add_member(GroupId(2), &Endpoint::Event(EventId(4)), None, USER)
             .unwrap();
-        s.add_member(GroupId(3), &Endpoint::Event(EventId(3)), USER)
+        s.add_member(GroupId(3), &Endpoint::Event(EventId(3)), None, USER)
             .unwrap();
         s.refresh_group_ranges().unwrap();
         let key = |secs: i64| Time::from_unix_seconds(secs).key.unwrap().0;
@@ -341,7 +379,7 @@ mod tests {
         );
         assert_eq!(s.group_range(GroupId(3)).unwrap(), (None, None));
         // Nesting passes the inner range up.
-        s.add_member(GroupId(1), &Endpoint::Group(GroupId(2)), USER)
+        s.add_member(GroupId(1), &Endpoint::Group(GroupId(2)), None, USER)
             .unwrap();
         s.refresh_group_ranges().unwrap();
         assert_eq!(
@@ -356,7 +394,7 @@ mod tests {
         s.add_group(GroupId(1), &kind(), "plugin's", "test.plugin")
             .unwrap();
         s.add_group(GroupId(2), &kind(), "mine", USER).unwrap();
-        s.add_member(GroupId(2), &Endpoint::Group(GroupId(1)), USER)
+        s.add_member(GroupId(2), &Endpoint::Group(GroupId(1)), None, USER)
             .unwrap();
         assert_eq!(s.clear_derived_groups().unwrap(), 1);
         assert!(
@@ -382,7 +420,7 @@ mod tests {
                  INSERT INTO groups SELECT i::UHUGEINT, 'test.group', 'same record', NULL, NULL,
                      'test.plugin' FROM range(220000) r(i);
                  INSERT INTO group_members SELECT (i // 3)::UHUGEINT, 'event', i::UHUGEINT,
-                     'test.plugin' FROM range(660000) r(i);",
+                     'test.plugin', NULL FROM range(660000) r(i);",
             )
             .unwrap();
         let t = std::time::Instant::now();

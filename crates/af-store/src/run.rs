@@ -442,9 +442,9 @@ fn save(store: &mut Store, sink: &SpoolSink) -> Result<(), ProjectError> {
         store
             .add_group(g.id, &g.kind, &g.reason, by)
             .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-        for m in &g.members {
+        for (m, why) in &g.members {
             store
-                .add_member(g.id, m, by)
+                .add_member(g.id, m, Some(why), by)
                 .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
         }
     }
