@@ -1664,7 +1664,7 @@ dependencies = [
 [[package]]
 name = "ntfs-core"
 version = "0.9.8"
-source = "git+https://github.com/DMeurer/ntfs-forensic?rev=d2161c2980ec23ac7a68fc397a569418ca081c56#d2161c2980ec23ac7a68fc397a569418ca081c56"
+source = "git+https://github.com/DMeurer/ntfs-forensic?rev=72071bfdecbb1b3eae9bb2ceb8179653f527ee7f#72071bfdecbb1b3eae9bb2ceb8179653f527ee7f"
 dependencies = [
  "bitflags 2.13.2",
  "chrono",
@@ -2377,7 +2377,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",

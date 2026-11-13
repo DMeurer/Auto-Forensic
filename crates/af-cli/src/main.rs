@@ -40,6 +40,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::sessions::Sessions,
     &af_windows::logons::Logons,
     &af_windows::download::DownloadToUse,
+    &af_windows::moved::MovedTo,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];

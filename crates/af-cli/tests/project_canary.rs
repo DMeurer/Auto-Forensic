@@ -213,11 +213,12 @@ fn project_canary() {
         let mut after = system_blocks(&after);
         let stick_at = after
             .iter()
-            // fs.timeline and the change journal apply to every system; FAT has no adapter yet,
-            // so there is nothing to read.
+            // fs.timeline, the change journal and its moved-to rule apply to every system; FAT
+            // has no adapter yet, so there is nothing to read.
             .position(|b| {
                 b.ends_with(
                     " FAT32-Win.E01\n    fs.timeline v1: not in this project\n    \
+                     windows.moved_to v1: not in this project\n    \
                      windows.usn v2: not in this project",
                 )
             })

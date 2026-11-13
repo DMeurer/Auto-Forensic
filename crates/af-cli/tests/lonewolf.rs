@@ -143,6 +143,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::same_file::SameFile,
             &af_windows::sessions::Sessions,
             &af_windows::logons::Logons,
+            &af_windows::moved::MovedTo,
         ],
         &profiles,
     )
@@ -634,6 +635,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         // L10: two logons that lasted 59 s, jcloudy's 09:19:58 to 09:55:16 (L4's session too),
         // and SAM's last logon.
         ("link windows.logon", 4),
+        // L11: journal renames into another folder, without the 6,226 within WinSxS.
+        ("link windows.moved_to", 446),
         ("link windows.session.ended", 1),
     ];
     assert_eq!(made, want.map(|(k, n)| (k.to_string(), n)));

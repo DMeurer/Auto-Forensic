@@ -127,12 +127,20 @@ impl Project {
                         let Some((f, stored)) = fs_vols[base].resolve(&path) else {
                             continue;
                         };
-                        let Some(data) = fss[base].1.open(&f, &StreamName::Default)? else {
+                        // Name the file in any error.
+                        let named = |e: std::io::Error| {
+                            let at = crate::run::folder_locator_path(&path);
+                            std::io::Error::new(e.kind(), format!("{at}: {e}"))
+                        };
+                        let Some(data) =
+                            fss[base].1.open(&f, &StreamName::Default).map_err(named)?
+                        else {
                             continue;
                         };
+                        let sha = af_host::ewf::sha256_of(&*data).map_err(named)?;
                         // The locator names the file as the disk stores it, not as the profile asked.
                         path = stored;
-                        (fss[base].0.clone(), af_host::ewf::sha256_of(&*data)?)
+                        (fss[base].0.clone(), sha)
                     };
                     index.add(Artifact {
                         kind,

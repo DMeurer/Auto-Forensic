@@ -20,6 +20,7 @@ pub mod lnk;
 pub mod logons;
 pub mod loose;
 pub mod mft;
+pub mod moved;
 pub mod network;
 pub mod plugins;
 pub mod prefetch;
