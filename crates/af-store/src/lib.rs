@@ -549,15 +549,17 @@ impl Store {
     pub fn event_list(
         &self,
         kind: Option<&str>,
+        prefix: bool,
         limit: Option<u64>,
     ) -> Result<Vec<(EventRow, Option<String>, Option<String>)>, Error> {
+        // `prefix` (O2): `kind` starts the kind, as `windows.evtx` does every event log event.
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {EVENT_COLUMNS}, r.locator, r.attrs FROM events e LEFT JOIN records r ON r.id = e.record \
-             WHERE ?1 IS NULL OR e.kind = ?1 \
+             WHERE ?1 IS NULL OR e.kind = ?1 OR (?3 AND starts_with(e.kind, ?1)) \
              ORDER BY e.ts NULLS LAST, e.seq_domain, e.seq_no, e.id LIMIT ?2"
         ))?;
         let limit = i64::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(i64::MAX);
-        stmt.query_map(params![kind, limit], |r| {
+        stmt.query_map(params![kind, limit, prefix], |r| {
             Ok((event_row(r)?, r.get(21)?, r.get(22)?))
         })?
         .collect()

@@ -109,6 +109,26 @@ enum Command {
     /// Groups: show why each member is there, list them, and make your own (O8).
     #[command(subcommand)]
     Group(GroupCommand),
+    /// Export the timeline's events to a file (O2): CSV that Timeline Explorer filters and sorts
+    /// (UTC times as `yyyy-MM-dd HH:mm:ss.fffffff`), or JSONL with each event's record, tags and
+    /// links.
+    Export {
+        project: PathBuf,
+        #[arg(long, value_enum)]
+        format: ExportFormat,
+        /// The file to write; an existing file is never overwritten.
+        #[arg(long)]
+        out: PathBuf,
+        /// Only kinds starting with this, such as windows.evtx.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only events in this list, directly or through a group in it.
+        #[arg(long)]
+        list: Option<String>,
+        /// Only events with this tag.
+        #[arg(long)]
+        tag: Option<String>,
+    },
     /// Facts (O9): without --kind, each kind with its count; with it, one tab-separated line per
     /// fact: kind, subject, values, as of, source, linked events, ID.
     Facts {
@@ -123,6 +143,12 @@ enum Command {
         #[arg(long)]
         events: bool,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ExportFormat {
+    Csv,
+    Jsonl,
 }
 
 #[derive(Subcommand)]
@@ -397,6 +423,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Command::List(cmd) => list_command(cmd, &mut out)?,
+        Command::Export {
+            project,
+            format,
+            out: file,
+            kind,
+            list,
+            tag,
+        } => {
+            let n = export(
+                &project,
+                format,
+                &file,
+                kind.as_deref(),
+                list.as_deref(),
+                tag.as_deref(),
+            )?;
+            writeln!(out, "{n} events written to {}", file.display())?;
+        }
         Command::Facts {
             project,
             kind,
@@ -744,6 +788,163 @@ fn write_group(
     Ok(())
 }
 
+/// `af export` (O2): the filtered events to `file`; how many.
+fn export(
+    project: &std::path::Path,
+    format: ExportFormat,
+    file: &std::path::Path,
+    kind: Option<&str>,
+    list: Option<&str>,
+    tag: Option<&str>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    use af_core::ids::{Endpoint, GroupId};
+    use std::collections::{HashMap, HashSet};
+    let p = Project::open_read_only(project, wait())?;
+    // Which events a list or tag keeps.
+    let mut keep: Option<HashSet<u128>> = None;
+    if let Some(name) = list {
+        let id = p
+            .store
+            .list_id(name)?
+            .ok_or_else(|| format!("no list {name:?}"))?;
+        let mut ids = HashSet::new();
+        for e in p.store.list_entries(id)? {
+            match e.member {
+                Endpoint::Event(e) => {
+                    ids.insert(e.0);
+                }
+                Endpoint::Group(g) => ids.extend(
+                    p.store
+                        .members_of(GroupId(g.0))?
+                        .into_iter()
+                        .filter(|(k, ..)| k == "event")
+                        .map(|(_, id, _)| id),
+                ),
+                _ => {}
+            }
+        }
+        keep = Some(ids);
+    }
+    if let Some(t) = tag {
+        let ids: HashSet<u128> = p
+            .store
+            .tags(Some(t))?
+            .into_iter()
+            .filter(|(_, k, _)| k == "event")
+            .filter_map(|(.., id)| id)
+            .collect();
+        keep = Some(match keep {
+            Some(k) => k.intersection(&ids).copied().collect(),
+            None => ids,
+        });
+    }
+    // Every event's tags and links, read once.
+    let mut tags: HashMap<u128, Vec<String>> = HashMap::new();
+    for (t, k, id) in p.store.tags(None)? {
+        if let (true, Some(id)) = (k == "event", id) {
+            tags.entry(id).or_default().push(t);
+        }
+    }
+    let mut links: HashMap<u128, Vec<serde_json::Value>> = HashMap::new();
+    {
+        let mut stmt = p.store.connection().prepare(
+            "SELECT from_kind, from_id, to_kind, to_id, coalesce(label, kind), \
+             coalesce(tier, 'strong'), coalesce(reason, '') FROM links",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<u128>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<u128>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })?;
+        for row in rows {
+            let (fk, fi, tk, ti, label, tier, reason) = row?;
+            let hex = |id: Option<u128>| id.map(|i| format!("{i:032x}"));
+            for (me, out, other_kind, other) in [(&fk, true, &tk, ti), (&tk, false, &fk, fi)] {
+                let mine = if out { fi } else { ti };
+                if let (true, Some(id)) = (me == "event", mine) {
+                    links.entry(id).or_default().push(serde_json::json!({
+                        "label": label, "tier": tier, "reason": reason,
+                        "direction": if out { "to" } else { "from" },
+                        "other_kind": other_kind, "other_id": hex(other),
+                    }));
+                }
+            }
+        }
+    }
+    let rows = event_rows(&p, project, kind, true, None)?;
+    let file_out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(file)
+        .map_err(|e| format!("{}: {e}", file.display()))?;
+    let mut w = std::io::BufWriter::new(file_out);
+    let csv = |s: &str| {
+        if s.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    };
+    if let ExportFormat::Csv = format {
+        // A byte order mark, so Windows tools read names with umlauts right.
+        write!(w, "\u{feff}")?;
+        writeln!(
+            w,
+            "Time (UTC),Kind,Meaning,Description,User Name,Remote Host,Executable Info,\
+             Payload Data1,Payload Data2,Payload Data3,Payload Data4,Payload Data5,Payload Data6,\
+             Tags,Links,Record,Event ID"
+        )?;
+    }
+    let mut n = 0;
+    for r in rows
+        .rows
+        .iter()
+        .filter(|r| keep.as_ref().is_none_or(|k| k.contains(&r.id)))
+    {
+        let no = vec![];
+        let (t, l) = (
+            tags.get(&r.id).unwrap_or(&no),
+            links.get(&r.id).map_or(&[][..], |l| l.as_slice()),
+        );
+        match format {
+            ExportFormat::Csv => {
+                let mut cols = vec![
+                    r.time.trim_end_matches(" UTC").to_string(),
+                    r.kind.clone(),
+                    r.meaning.clone(),
+                ];
+                cols.extend(r.mapped.iter().cloned());
+                cols.push(t.join("; "));
+                cols.push(l.len().to_string());
+                cols.push(r.record.clone().unwrap_or_default());
+                cols.push(format!("{:032x}", r.id));
+                let line: Vec<String> = cols.iter().map(|c| csv(c)).collect();
+                writeln!(w, "{}", line.join(","))?;
+            }
+            ExportFormat::Jsonl => {
+                let m = &r.mapped;
+                let o = serde_json::json!({
+                    "id": format!("{:032x}", r.id), "time": r.time, "ts": r.ts,
+                    "kind": r.kind, "meaning": r.meaning,
+                    "description": m[0], "user_name": m[1], "remote_host": m[2],
+                    "executable_info": m[3], "payload": &m[4..],
+                    "tags": t, "links": l, "record": r.record, "data": r.data,
+                });
+                writeln!(w, "{o}")?;
+            }
+        }
+        n += 1;
+    }
+    w.flush()?;
+    Ok(n)
+}
+
 /// `af facts` (O9).
 fn facts(
     project: &std::path::Path,
@@ -1045,8 +1246,59 @@ fn events(
     limit: Option<u64>,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use af_windows::evtx_map::{EventMap, builtin_maps, map_event};
     let p = Project::open_read_only(project, wait())?;
+    let rows = event_rows(&p, project, kind, false, limit)?;
+    let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
+    for n in &rows.notes {
+        writeln!(out, "{n}")?;
+    }
+    writeln!(
+        out,
+        "time\tkind\tmeaning\tdescription\tuser_name\tremote_host\texecutable_info\t\
+         payload_data1\tpayload_data2\tpayload_data3\tpayload_data4\tpayload_data5\tpayload_data6\t\
+         record\tid"
+    )?;
+    for r in &rows.rows {
+        let mut cols = vec![r.time.clone(), r.kind.clone(), r.meaning.clone()];
+        cols.extend(r.mapped.iter().cloned());
+        cols.push(r.record.clone().unwrap_or_default());
+        // L1: the ID `af explain` takes.
+        cols.push(format!("{:032x}", r.id));
+        let line = cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t");
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// One timeline row: an event with its record and EvtxECmd's fields where a map fits.
+struct EventLine {
+    id: u128,
+    time: String,
+    ts: Option<i64>,
+    kind: String,
+    meaning: String,
+    /// Description, user name, remote host, executable info and payload data 1 to 6.
+    mapped: Vec<String>,
+    record: Option<String>,
+    /// The record's content.
+    data: Option<serde_json::Value>,
+}
+
+/// Events in timeline order with their map notes (`# note on event …`), for `af events` and
+/// `af export`. Maps: the project's `maps/*.map` first, then af's, then EvtxECmd's.
+struct EventRows {
+    notes: Vec<String>,
+    rows: Vec<EventLine>,
+}
+
+fn event_rows(
+    p: &Project,
+    project: &std::path::Path,
+    kind: Option<&str>,
+    prefix: bool,
+    limit: Option<u64>,
+) -> Result<EventRows, Box<dyn std::error::Error>> {
+    use af_windows::evtx_map::{EventMap, builtin_maps, map_event};
     let mut maps = vec![];
     if let Ok(dir) = std::fs::read_dir(project.join("maps")) {
         let mut files: Vec<_> = dir
@@ -1066,57 +1318,51 @@ fn events(
         }
     }
     maps.extend(builtin_maps());
-    let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
-    let mut lines = vec![];
+    let mut rows = vec![];
     let mut used: Vec<usize> = vec![];
-    for (e, record, attrs) in p.store.event_list(kind, limit)? {
+    for (e, record, attrs) in p.store.event_list(kind, prefix, limit)? {
         let time = Time::from_columns(&e.time)
             .map(|t| t.display())
             .unwrap_or_default();
-        let event: Option<serde_json::Value> =
+        let data: Option<serde_json::Value> =
             attrs.as_deref().and_then(|a| serde_json::from_str(a).ok());
-        let mapped = event.as_ref().and_then(|ev| map_event(&maps, ev));
-        let mut cols = vec![time, e.kind.clone(), e.meaning.clone()];
-        match mapped {
+        let mapped = match data.as_ref().and_then(|ev| map_event(&maps, ev)) {
             Some((m, f)) => {
                 let i = maps.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(0);
                 if !used.contains(&i) {
                     used.push(i);
                 }
-                cols.extend([f.description, f.user_name, f.remote_host, f.executable_info]);
+                let mut cols = vec![f.description, f.user_name, f.remote_host, f.executable_info];
                 cols.extend(f.payload);
+                cols
             }
-            None => cols.extend(std::iter::repeat_n(String::new(), 10)),
-        }
-        cols.push(record.unwrap_or_default());
-        // L1: the ID `af explain` takes.
-        cols.push(format!("{:032x}", e.id));
-        lines.push(cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t"));
+            None => vec![String::new(); 10],
+        };
+        rows.push(EventLine {
+            id: e.id,
+            time,
+            ts: e.time.ts,
+            kind: e.kind,
+            meaning: e.meaning,
+            mapped,
+            record,
+            data,
+        });
     }
     // A note shows when its map was used or its event was asked for, even with no events: it
     // says why one may be missing (such as an audit policy that was off).
     let asked = kind.and_then(|k| k.strip_prefix("windows.evtx.")?.parse::<u32>().ok());
-    for (i, m) in maps.iter().enumerate() {
-        if let Some(n) = &m.note
-            && (used.contains(&i) || asked == Some(m.event_id))
-        {
-            writeln!(
-                out,
-                "# note on event {} ({}): {}",
-                m.event_id,
-                m.description,
-                clean(n)
-            )?;
-        }
-    }
-    writeln!(
-        out,
-        "time\tkind\tmeaning\tdescription\tuser_name\tremote_host\texecutable_info\t\
-         payload_data1\tpayload_data2\tpayload_data3\tpayload_data4\tpayload_data5\tpayload_data6\t\
-         record\tid"
-    )?;
-    for l in lines {
-        writeln!(out, "{l}")?;
-    }
-    Ok(())
+    let notes = maps
+        .iter()
+        .enumerate()
+        .filter(|(i, m)| used.contains(i) || asked == Some(m.event_id))
+        .filter_map(|(_, m)| {
+            let n = m.note.as_ref()?.replace(['\t', '\r', '\n'], " ");
+            Some(format!(
+                "# note on event {} ({}): {n}",
+                m.event_id, m.description
+            ))
+        })
+        .collect();
+    Ok(EventRows { notes, rows })
 }

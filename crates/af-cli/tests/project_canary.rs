@@ -271,6 +271,44 @@ fn project_canary() {
     af(&["comment", "remove", c, "1"]);
     assert!(af(&["comment", "list", c]).is_empty());
 
+    // O2: exports. All 15 events as JSONL; the tagged one as CSV, with its tag and its link;
+    // an existing file is never overwritten.
+    let exports = case.parent().unwrap().join("exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    let (jsonl, csv) = (exports.join("all.jsonl"), exports.join("tagged.csv"));
+    let (jsonl, csv) = (jsonl.to_str().unwrap(), csv.to_str().unwrap());
+    af(&["export", c, "--format", "jsonl", "--out", jsonl]);
+    let all = std::fs::read_to_string(jsonl).unwrap();
+    assert_eq!(all.lines().count(), 15);
+    for l in all.lines() {
+        let v: serde_json::Value = serde_json::from_str(l).unwrap();
+        assert!(v["id"].as_str().is_some_and(|i| i.len() == 32), "{l}");
+    }
+    af(&[
+        "export",
+        c,
+        "--format",
+        "csv",
+        "--tag",
+        "suspicious",
+        "--out",
+        csv,
+    ]);
+    let text = std::fs::read_to_string(csv).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].starts_with("\u{feff}Time (UTC),Kind,Meaning,"),
+        "{text}"
+    );
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(lines[1].contains(",suspicious,1,"), "{text}");
+    assert!(lines[1].ends_with(&format!(",{tagged:032x}")), "{text}");
+    let again = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["export", c, "--format", "csv", "--out", csv])
+        .output()
+        .unwrap();
+    assert!(!again.status.success());
+
     // L7: the link to the group shows from its source event, on the group, and on each member
     // as coming through the group.
     let (group, reason, members) = &hive_groups[0];
