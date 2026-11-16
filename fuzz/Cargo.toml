@@ -1,6 +1,6 @@
 [package]
 name = "af-fuzz"
-description = "Fuzz targets for the parsers and file system adapters (I25). Run with `cargo +nightly fuzz run <target>`; see fuzz/README.md."
+description = "Fuzz targets for the parsers and file system adapters (I25) and the format wrappers (O4). Run with `cargo +nightly fuzz run <target>`; see fuzz/README.md."
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -19,6 +19,15 @@ af-host = { path = "../crates/af-host" }
 af-fmt-regf = { path = "../formats/af-fmt-regf" }
 af-fs-archive = { path = "../fs/af-fs-archive" }
 af-fs-ntfs = { path = "../fs/af-fs-ntfs" }
+af-fmt-lnk = { path = "../formats/af-fmt-lnk" }
+af-fmt-prefetch = { path = "../formats/af-fmt-prefetch" }
+af-fmt-usn = { path = "../formats/af-fmt-usn" }
+af-fmt-mft = { path = "../formats/af-fmt-mft" }
+af-fmt-evtx = { path = "../formats/af-fmt-evtx" }
+af-fmt-browser = { path = "../formats/af-fmt-browser" }
+af-fmt-utmp = { path = "../formats/af-fmt-utmp" }
+af-windows = { path = "../os/af-windows" }
+serde_json = "1"
 
 [[bin]]
 name = "archive"
@@ -48,3 +57,59 @@ test = false
 doc = false
 bench = false
 
+
+[[bin]]
+name = "lnk"
+path = "fuzz_targets/lnk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prefetch"
+path = "fuzz_targets/prefetch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usn"
+path = "fuzz_targets/usn.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mft"
+path = "fuzz_targets/mft.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evtx"
+path = "fuzz_targets/evtx.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "browser"
+path = "fuzz_targets/browser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "utmp"
+path = "fuzz_targets/utmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evtx_map"
+path = "fuzz_targets/evtx_map.rs"
+test = false
+doc = false
+bench = false
