@@ -12,7 +12,7 @@ use crate::ids::{EventId, FileId, record_id};
 use crate::names::Kind;
 use crate::path::{Name, ViewPath};
 use crate::plugin::{Input, Manifest, Outcome, Phase};
-use crate::runner::{NewEvent, NewRecord, Plugin, RunContext};
+use crate::runner::{NewEvent, NewRecord, Plugin, RunContext, Span, SpanBase};
 use crate::time::TimeStatus;
 use crate::timeline::{ClockDomainId, TimeMeaning};
 use std::collections::HashMap;
@@ -29,7 +29,8 @@ impl Plugin for Timeline {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("fs.timeline").expect("valid kind"),
-            version: 1,
+            // 2: where each entry's record lies in the image (O3).
+            version: 2,
             applies_to: vec![],
             phases: vec![Phase::Extract],
             // shortcut: required while NTFS is the only adapter; with a second one, list both as
@@ -90,6 +91,7 @@ impl Plugin for Timeline {
                             kind: Kind::new("fs.entry").expect("valid kind"),
                             locator: locator.clone(),
                             attrs: Some(attrs.to_string()),
+                            span: image_span(e),
                         },
                     );
                     for (kind, time) in e.times.iter().filter(|(_, t)| t.status != TimeStatus::NotSet) {
@@ -132,6 +134,21 @@ impl Plugin for Timeline {
         }
         Outcome::Ok(n)
     }
+}
+
+/// Where the entry's record lies in the image (O3), as the adapter gives it.
+fn image_span(e: &Entry) -> Option<Span> {
+    let value = |name: &str| {
+        e.attrs
+            .iter()
+            .find(|(k, _)| k.as_str() == name)
+            .and_then(|(_, v)| v.parse().ok())
+    };
+    Some(Span {
+        offset: value("fs.record.image_offset")?,
+        length: value("fs.record.length")?,
+        within: SpanBase::Image,
+    })
 }
 
 /// An entry ID as locator text: its scheme and value in hex.

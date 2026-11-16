@@ -6,17 +6,17 @@
 //! names its file by MFT record and sequence number; it isn't linked to it (L6: a link from every
 //! journal event to its file is the "links every file" noise the user ruled out).
 
-use af_core::bytes::SourceReader;
+use af_core::bytes::{ByteSource, SourceReader, map_to_root};
 use af_core::fs::{FileSystem, StreamName};
 use af_core::ids::{EventId, FileId, record_id};
 use af_core::names::Kind;
 use af_core::path::{Name, NameKind};
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext};
+use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext, Span, SpanBase};
 use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, TimeMeaning};
 use af_fmt_usn::{FileRef, Names, parent_paths};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// `USN_REASON_*`: bit, MFTECmd's name, the event kind's last part.
 const REASONS: [(u32, &str, &str); 23] = [
@@ -55,8 +55,8 @@ impl Plugin for Journal {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.usn").expect("valid kind"),
-            // 2: no links to files (L6).
-            version: 2,
+            // 2: no links to files (L6). 3: where each record's bytes are (O3).
+            version: 3,
             // NTFS on any system: a stick has a journal too.
             applies_to: vec![],
             phases: vec![Phase::Extract],
@@ -100,7 +100,7 @@ impl Plugin for Journal {
             let source_text = a.source.to_string();
             let mut note = None;
             let opened = opener.file_system(a, &mut |fs| {
-                let records = match journal(fs) {
+                let (records, j) = match journal(fs) {
                     Ok(Some(r)) => r,
                     Ok(None) => return,
                     Err(e) => {
@@ -138,6 +138,7 @@ impl Plugin for Journal {
                             kind: record_kind.clone(),
                             locator: locator.clone(),
                             attrs: Some(attrs.to_string()),
+                            span: span(j.as_ref(), r),
                         },
                     );
                     let Some(ticks) = r.ticks else { continue };
@@ -173,8 +174,27 @@ impl Plugin for Journal {
     }
 }
 
-/// The records of `$Extend\$UsnJrnl:$J`; `None` when the volume keeps no journal.
-fn journal(fs: &dyn FileSystem) -> std::io::Result<Option<Vec<af_fmt_usn::Record>>> {
+/// Where a record's bytes are in the image (O3): its USN is its offset in `$J`, mapped down
+/// through the volume; `None` where that can't map (a compressed or sparse part). A record never
+/// crosses a page of `$J`, so its bytes lie together.
+fn span(j: &dyn ByteSource, r: &af_fmt_usn::Record) -> Option<Span> {
+    let at = map_to_root(j, u64::try_from(r.usn).ok()?);
+    // Version 2 records have 60 bytes before the name, version 3 have 76; 8-byte aligned.
+    let head = if r.version >= 3 { 76 } else { 60 };
+    let length = (head + 2 * r.name.encode_utf16().count() as u64 + 7) & !7;
+    at.stopped.is_none().then_some(Span {
+        offset: at.offset,
+        length,
+        within: SpanBase::Image,
+    })
+}
+
+/// The records of `$Extend\$UsnJrnl:$J` with the stream itself; `None` when the volume keeps no
+/// journal.
+#[allow(clippy::type_complexity)]
+fn journal(
+    fs: &dyn FileSystem,
+) -> std::io::Result<Option<(Vec<af_fmt_usn::Record>, Arc<dyn ByteSource>)>> {
     let child = |dir: &FileId, name: &str| -> std::io::Result<Option<FileId>> {
         Ok(fs
             .list(dir)?
@@ -193,9 +213,9 @@ fn journal(fs: &dyn FileSystem) -> std::io::Result<Option<Vec<af_fmt_usn::Record
     let Some(src) = fs.open(&jrnl, &j)? else {
         return Ok(None);
     };
-    af_fmt_usn::read(SourceReader::new(src))
+    af_fmt_usn::read(SourceReader::new(src.clone()))
         .and_then(|r| r.collect::<Result<Vec<_>, _>>())
-        .map(Some)
+        .map(|r| Some((r, src)))
         .map_err(std::io::Error::other)
 }
 

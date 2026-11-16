@@ -95,8 +95,15 @@ enum Command {
     },
     /// One event, group or fact and its links, each with its label first, strong before possible
     /// (L1), then the groups it is in with their links (L7). The event ID is the last column of
-    /// `af events`; group and fact IDs show in explain.
-    Explain { project: PathBuf, id: String },
+    /// `af events`; group and fact IDs show in explain. An event also shows its plugin and
+    /// version, and where its record's bytes are, down to the image, with a hex dump (O3).
+    Explain {
+        project: PathBuf,
+        id: String,
+        /// Show at most this many of the record's bytes.
+        #[arg(long, default_value_t = 512)]
+        bytes: u64,
+    },
     /// Tag events, groups and facts, and list them by tag (O1). Tags stay through re-runs.
     #[command(subcommand)]
     Tag(TagCommand),
@@ -390,7 +397,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             kind,
             limit,
         } => events(&project, kind.as_deref(), limit, &mut out)?,
-        Command::Explain { project, id } => explain(&project, &id, &mut out)?,
+        Command::Explain { project, id, bytes } => explain(&project, &id, bytes, &mut out)?,
         Command::Tag(cmd) => match cmd {
             TagCommand::Add { project, id, tag } => {
                 let mut p = Project::open(&project)?;
@@ -682,6 +689,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 fn explain(
     project: &std::path::Path,
     id: &str,
+    max_bytes: u64,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use af_core::ids::{Endpoint, EventId, FactId, GroupId};
@@ -691,6 +699,34 @@ fn explain(
         writeln!(out, "{}  {}", describe(&p, "event", id)?, e.meaning)?;
         if let Some(r) = record {
             writeln!(out, "  record {r}")?;
+        }
+        // O3: the plugin that read it, and where its bytes are.
+        let version = p.store.plugin_version(&e.created_by, e.system)?;
+        match version {
+            Some(v) => writeln!(out, "  plugin {} v{v}", e.created_by)?,
+            None => writeln!(out, "  plugin {}", e.created_by)?,
+        }
+        match af_store::run::trace(&p, e.record, max_bytes)? {
+            None => writeln!(out, "  bytes: the plugin keeps no place for this record")?,
+            Some(t) => {
+                writeln!(
+                    out,
+                    "  bytes: {} at offset {} (0x{:x}) of {}, source {}",
+                    t.length, t.offset, t.offset, t.within, t.source
+                )?;
+                match &t.evidence {
+                    Ok((at, o)) => writeln!(out, "  evidence offset {o} (0x{o:x}) in {at}")?,
+                    Err(why) => writeln!(out, "  evidence offset: none, {why}")?,
+                }
+                hex_dump(&t.bytes, out)?;
+                if (t.bytes.len() as u64) < t.length {
+                    writeln!(
+                        out,
+                        "    … {} more bytes (--bytes)",
+                        t.length - t.bytes.len() as u64
+                    )?;
+                }
+            }
         }
         Endpoint::Event(EventId(id))
     } else if let Some(g) = p.store.group_by_id(id)? {
@@ -761,6 +797,25 @@ fn describe(p: &Project, kind: &str, id: u128) -> Result<String, Box<dyn std::er
         },
         kind => format!("{kind} {id:032x}"),
     })
+}
+
+/// 16 bytes a line: offset, hex, and the printable ones as text.
+fn hex_dump(bytes: &[u8], out: &mut dyn Write) -> std::io::Result<()> {
+    for (i, line) in bytes.chunks(16).enumerate() {
+        let hex: Vec<String> = line.iter().map(|b| format!("{b:02x}")).collect();
+        let text: String = line
+            .iter()
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        writeln!(out, "    {:08x}  {:<47}  {text}", i * 16, hex.join(" "))?;
+    }
+    Ok(())
 }
 
 /// A group's header, then its members (at most `limit`), each with why it is there first (O8).

@@ -102,6 +102,7 @@ impl Sink for SpoolSink {
             locator: r.locator.to_string(),
             attrs: r.attrs,
             created_by: plugin.as_str().into(),
+            span: r.span,
         });
     }
     fn note(&mut self, plugin: &Kind, system: SystemId, text: String) {
@@ -658,4 +659,93 @@ mod tests {
         drop(p);
         std::fs::remove_dir_all(&parent).unwrap();
     }
+}
+
+/// Where a record's bytes are, read back (O3).
+#[derive(Debug)]
+pub struct Trace {
+    /// The source's label.
+    pub source: String,
+    /// What the offset is in: the artifact's locator, or the source itself.
+    pub within: String,
+    pub offset: u64,
+    pub length: u64,
+    /// The offset in the evidence (the image, or a loose file), or why it can't map.
+    pub evidence: Result<(Locator, u64), String>,
+    /// The record's bytes, at most as many as asked for.
+    pub bytes: Vec<u8>,
+}
+
+/// Reads record `id`'s bytes back from the evidence, at most `max` of them; `None` when the
+/// plugin stored no place for it (or the project was last run before O3).
+pub fn trace(p: &Project, id: u128, max: u64) -> Result<Option<Trace>, ProjectError> {
+    use af_core::bytes::map_to_root;
+    let conn = p.store.connection();
+    let has: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM duckdb_columns() WHERE table_name = 'records' \
+         AND column_name = 'byte_within'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has {
+        return Ok(None);
+    }
+    let row: Option<(String, u128, u64, u64, String)> = conn
+        .query_row(
+            "SELECT locator, source, byte_offset, byte_length, byte_within FROM records \
+             WHERE id = ? AND byte_within IS NOT NULL",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            duckdb::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })?;
+    let Some((locator, source, offset, length, within)) = row else {
+        return Ok(None);
+    };
+    let sources = p.sources()?;
+    let s = sources
+        .iter()
+        .find(|s| s.id.0 == source)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "record without a source"))?;
+    let want = length.min(max) as usize;
+    let mut bytes = vec![0u8; want];
+    let (within_text, evidence) = if within == "image" {
+        let root = Locator::root(&format!("source.{}", s.kind), &s.id.to_string());
+        let img = af_host::ewf::open_image(&s.files, root.clone())?;
+        img.read_exact_at(offset, &mut bytes)?;
+        (format!("{} itself", s.label), Ok((root, offset)))
+    } else {
+        let parsed = Locator::parse(&locator)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad locator"))?;
+        let steps = parsed.steps();
+        let parent = Locator(steps[..steps.len().saturating_sub(1)].to_vec());
+        let index = p.store.artifacts()?;
+        let a = index
+            .all()
+            .find(|a| a.locator == parent)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "its artifact isn't indexed"))?;
+        let opener = ProjectOpener {
+            sources: sources.clone(),
+            opened: Mutex::new(HashMap::new()),
+        };
+        let src = af_core::runner::Opener::open(&opener, a)?;
+        src.read_exact_at(offset, &mut bytes)?;
+        let at = map_to_root(src.as_ref(), offset);
+        let evidence = match at.stopped {
+            None => Ok((at.locator, at.offset)),
+            Some(why) => Err(format!("{why:?} at {}", at.locator)),
+        };
+        (parent.to_string(), evidence)
+    };
+    Ok(Some(Trace {
+        source: s.label.clone(),
+        within: within_text,
+        offset,
+        length,
+        evidence,
+        bytes,
+    }))
 }

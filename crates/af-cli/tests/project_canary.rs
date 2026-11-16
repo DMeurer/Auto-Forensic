@@ -381,9 +381,9 @@ fn project_canary() {
             // has no adapter yet, so there is nothing to read.
             .position(|b| {
                 b.ends_with(
-                    " FAT32-Win.E01\n    fs.timeline v1: not in this project\n    \
+                    " FAT32-Win.E01\n    fs.timeline v2: not in this project\n    \
                      windows.moved_to v1: not in this project\n    \
-                     windows.usn v2: not in this project",
+                     windows.usn v3: not in this project",
                 )
             })
             .unwrap_or_else(|| panic!("the stick isn't a system with nothing read: {after:?}"));

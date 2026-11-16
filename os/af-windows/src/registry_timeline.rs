@@ -8,7 +8,9 @@ use af_core::ids::{EventId, record_id};
 use af_core::names::Kind;
 use af_core::path::Name;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{CAPABILITY_REGISTRY, NewEvent, NewRecord, Plugin, RunContext};
+use af_core::runner::{
+    CAPABILITY_REGISTRY, NewEvent, NewRecord, Plugin, RunContext, Span, SpanBase,
+};
 use af_core::system::Family;
 use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, TimeMeaning};
@@ -33,7 +35,8 @@ impl Plugin for KeyTimes {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.registry.key_times").expect("valid kind"),
-            version: 1,
+            // 2: where each key's cell is in its hive file (O3).
+            version: 2,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             // The hives and their logs, so a changed hive or log extracts again.
@@ -91,6 +94,11 @@ impl Plugin for KeyTimes {
                         kind: record_kind.clone(),
                         locator: locator.clone(),
                         attrs: Some(attrs.to_string()),
+                        span: k.cell.map(|(offset, length)| Span {
+                            offset,
+                            length,
+                            within: SpanBase::Artifact,
+                        }),
                     },
                 );
                 sink.event(

@@ -147,6 +147,23 @@ impl Ntfs {
         Ok(Some((h, all)))
     }
 
+    /// Where MFT record `n` starts in the image (O3), through the `$MFT`'s runs and the volume;
+    /// `None` past the runs or where the volume doesn't map down one to one.
+    fn record_image_offset(&self, n: u64) -> Option<u64> {
+        let cluster = self.fs.boot().cluster_size();
+        let mut vcn_byte = n.checked_mul(self.fs.boot().mft_record_size)?;
+        for run in &self.mft_runs {
+            let run_len = run.length.saturating_mul(cluster);
+            if vcn_byte < run_len {
+                let at = run.lcn?.checked_mul(cluster)? + vcn_byte;
+                let root = af_core::bytes::map_to_root(self.volume.as_ref(), at);
+                return root.stopped.is_none().then_some(root.offset);
+            }
+            vcn_byte -= run_len;
+        }
+        None
+    }
+
     /// Whether MFT slot `n` holds no record on the volume: neither `FILE` nor `BAAD` (a record
     /// Windows marked broken, which stays an error).
     fn no_record(&self, n: u64) -> io::Result<bool> {
@@ -304,7 +321,19 @@ impl Ntfs {
             allocated,
             recovered: (!allocated).then(|| kind("ntfs.mft.unused_record")),
             streams,
-            attrs: vec![],
+            // O3: where the base record lies in the image, for tracing an entry's times back.
+            attrs: self
+                .record_image_offset(n)
+                .map(|at| {
+                    vec![
+                        (kind("fs.record.image_offset"), at.to_string()),
+                        (
+                            kind("fs.record.length"),
+                            self.fs.boot().mft_record_size.to_string(),
+                        ),
+                    ]
+                })
+                .unwrap_or_default(),
         })
         // Nameless records are reserved or never used, except deleted files whose name the
         // driver cleared (Linux does) but whose data is still there.

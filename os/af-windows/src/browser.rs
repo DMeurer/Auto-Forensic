@@ -222,6 +222,7 @@ impl Out<'_, '_> {
                 kind: Kind::new(kind).expect("valid kind"),
                 locator: locator.clone(),
                 attrs: Some(attrs.to_string()),
+                span: None,
             },
         );
         for (k, t) in times {

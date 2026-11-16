@@ -79,6 +79,7 @@ impl Plugin for Tasks {
                     kind: record_kind.clone(),
                     locator: a.locator.clone(),
                     attrs: Some(task.attrs.to_string()),
+                    span: None,
                 },
             );
             if let Some(time) = task.date.as_deref().and_then(|d| date(d, zone.as_ref())) {

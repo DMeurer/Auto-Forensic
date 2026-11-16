@@ -442,6 +442,7 @@ fn reg_key(path: ViewPath, k: af_fmt_regf::hive::Key) -> RegKey {
                 data: v.data,
             })
             .collect(),
+        cell: k.cell,
     }
 }
 

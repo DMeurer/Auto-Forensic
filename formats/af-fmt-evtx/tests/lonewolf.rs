@@ -26,10 +26,24 @@ fn every_lonewolf_log_reads_without_errors() {
     assert_eq!(logs.len(), 146);
     let mut records = 0;
     for (name, data) in logs {
-        let log = af_fmt_evtx::read(data).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let log = af_fmt_evtx::read(data.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(log.errors.is_empty(), "{name}: {:?}", log.errors);
         assert!(!log.bad_header, "{name}");
         records += log.records.len();
+        // O3: every record's span is a record header with its own ID.
+        for r in &log.records {
+            let (at, size) = r
+                .span
+                .unwrap_or_else(|| panic!("{name}: {} has no span", r.record_id));
+            let b = &data[at as usize..(at + size) as usize];
+            assert!(b.starts_with(b"\x2a\x2a\0\0"), "{name}: {}", r.record_id);
+            assert_eq!(
+                u64::from_le_bytes(b[8..16].try_into().unwrap()),
+                r.record_id
+            );
+            // A record ends with its size again.
+            assert_eq!(&b[b.len() - 4..], &(size as u32).to_le_bytes(), "{name}");
+        }
     }
     // EvtxECmd 2026.10.2 gives 55,638 rows for these files too (stage 1, T3).
     assert_eq!(records, 55_638);

@@ -90,6 +90,7 @@ impl Plugin for RecycleBin {
                     kind: record_kind.clone(),
                     locator: a.locator.clone(),
                     attrs: Some(attrs.to_string()),
+                    span: None,
                 },
             );
             if info.deleted != 0 {

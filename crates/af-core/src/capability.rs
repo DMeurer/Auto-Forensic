@@ -49,6 +49,8 @@ pub struct RegKey {
     pub last_written: Option<Time>,
     pub subkeys: Vec<Name>,
     pub values: Vec<RegValue>,
+    /// The key cell's offset and size in its hive file, when known (O3).
+    pub cell: Option<(u64, u64)>,
 }
 
 impl RegKey {
@@ -189,6 +191,7 @@ impl FakeRegistry {
                 last_written: None,
                 subkeys: Vec::new(),
                 values: Vec::new(),
+                cell: None,
             },
         );
         if let (Some(parent), Some(last)) = (path.parent(), path.names().last()) {

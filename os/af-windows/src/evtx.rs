@@ -6,7 +6,7 @@
 use af_core::ids::{EventId, record_id};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext};
+use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext, Span, SpanBase};
 use af_core::system::Family;
 use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, Sequence, TimeMeaning};
@@ -21,7 +21,8 @@ impl Plugin for EventLogs {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.evtx.events").expect("valid kind"),
-            version: 1,
+            // 2: where each record's bytes are (O3).
+            version: 2,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: vec![Input {
@@ -116,6 +117,11 @@ impl Plugin for EventLogs {
                         kind: record_kind.clone(),
                         locator,
                         attrs: Some(r.event.to_string()),
+                        span: r.span.map(|(offset, length)| Span {
+                            offset,
+                            length,
+                            within: SpanBase::Artifact,
+                        }),
                     },
                 );
                 n += 1;

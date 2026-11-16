@@ -139,6 +139,7 @@ impl Plugin for Sam {
                     kind: kind.clone(),
                     locator: account.clone(),
                     attrs: Some(attrs.to_string()),
+                    span: None,
                 },
             );
             ctx.sink.fact(

@@ -96,6 +96,7 @@ impl Plugin for Bam {
                                 kind: record_kind.clone(),
                                 locator: locator.clone(),
                                 attrs: Some(attrs.to_string()),
+                                span: None,
                             },
                         );
                         ctx.sink.event(

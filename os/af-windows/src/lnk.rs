@@ -125,6 +125,7 @@ impl Plugin for Shortcuts {
                     kind: record_kind.clone(),
                     locator: a.locator.clone(),
                     attrs: Some(attrs.to_string()),
+                    span: None,
                 },
             );
             let times = [

@@ -12,7 +12,7 @@
 use af_core::ids::{EventId, record_id};
 use af_core::names::Kind;
 use af_core::plugin::{Input, Manifest, Outcome, Phase};
-use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext};
+use af_core::runner::{NewEvent, NewRecord, Plugin, RunContext, Span, SpanBase};
 use af_core::system::Family;
 use af_core::time::Time;
 use af_core::timeline::{ClockDomainId, TimeMeaning};
@@ -41,8 +41,9 @@ impl Plugin for Mft {
         static M: OnceLock<Manifest> = OnceLock::new();
         M.get_or_init(|| Manifest {
             id: Kind::new("windows.mft").expect("valid kind"),
-            // 2: `mft_modified` renamed `changed`, as the NTFS adapter names it.
-            version: 2,
+            // 2: `mft_modified` renamed `changed`, as the NTFS adapter names it. 3: where each
+            // record's bytes are (O3).
+            version: 3,
             applies_to: vec![Family::Windows],
             phases: vec![Phase::Extract],
             inputs: vec![Input {
@@ -120,6 +121,11 @@ impl Plugin for Mft {
                             kind: record_kind.clone(),
                             locator: locator.clone(),
                             attrs: Some(attrs.to_string()),
+                            span: Some(Span {
+                                offset: r.number * u64::from(r.record_size),
+                                length: u64::from(r.record_size),
+                                within: SpanBase::Artifact,
+                            }),
                         },
                     );
                     let mut times = vec![];

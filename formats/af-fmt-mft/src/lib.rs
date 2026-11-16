@@ -17,6 +17,9 @@ use mft::entry::MftEntry;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub number: u64,
+    /// The record's size on disk, as its header gives it (1024 almost always): record `number`
+    /// starts at `number` times this in `$MFT`.
+    pub record_size: u32,
     pub sequence: u16,
     /// The record is in use; a deleted file's record is not, until it is reused.
     pub in_use: bool,
@@ -106,6 +109,7 @@ pub fn read(mft: Vec<u8>, mut visit: impl FnMut(Record)) -> Result<Summary, Stri
             });
         visit(Record {
             number: entry.header.record_number,
+            record_size: entry.header.total_entry_size,
             sequence: entry.header.sequence,
             in_use: entry.is_allocated(),
             is_dir: entry.is_dir(),

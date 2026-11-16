@@ -100,6 +100,7 @@ impl Plugin for Prefetch {
                     kind: record_kind.clone(),
                     locator: a.locator.clone(),
                     attrs: Some(attrs.to_string()),
+                    span: None,
                 },
             );
             for (slot, &ticks) in pf.run_times.iter().enumerate() {

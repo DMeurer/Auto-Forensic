@@ -168,6 +168,34 @@ pub struct NewRecord {
     pub locator: Locator,
     /// The row's content as JSON text.
     pub attrs: Option<String>,
+    /// Where its bytes are (O3), when the plugin knows.
+    pub span: Option<Span>,
+}
+
+/// A record's bytes (O3): `length` bytes at `offset` of what `within` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub offset: u64,
+    pub length: u64,
+    pub within: SpanBase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanBase {
+    /// The artifact its locator sits in (the locator without its last step).
+    Artifact,
+    /// The source's evidence itself: the image (for records the plugin read through a file
+    /// system's streams, mapped down while reading).
+    Image,
+}
+
+impl SpanBase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Artifact => "artifact",
+            Self::Image => "image",
+        }
+    }
 }
 
 /// How sure a link is (L1, the format agreed in stage 0). Possible links sort last.

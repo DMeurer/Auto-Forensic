@@ -212,7 +212,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
     );
     for line in [
         "  windows.evtx: 146",
-        "    windows.evtx.events v1: read, 55638 items",
+        "    windows.evtx.events v2: read, 55638 items",
         "  windows.prefetch: 161",
         "    windows.prefetch v1: read, 695 items",
         "  windows.hive.log: 22",
@@ -267,6 +267,62 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
                 && l.contains("192.168.0.7")),
         "{network}"
     );
+
+    // O3: one event of each kind with a place traces back to its image offset: the bytes there,
+    // read straight from the image, are the record explain shows, and start as such records do.
+    // (The event log one was checked by hand against TSK's runs: 5,681,145,256.)
+    let run = |args: &[&str]| {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let c = case.to_str().unwrap();
+    let image = af_host::ewf::open_image(
+        &source.files,
+        af_core::bytes::Locator::root("source.image", "lonewolf"),
+    )
+    .unwrap();
+    for (kind, starts) in [
+        ("ntfs.usn.close", &b""[..]),
+        ("ntfs.si.created", b"FILE"),
+        ("windows.evtx.4624", b"**\0\0"),
+        ("windows.registry.key_written", b""),
+    ] {
+        let line = run(&["events", c, "--kind", kind, "--limit", "1"]);
+        let id = line
+            .lines()
+            .last()
+            .unwrap()
+            .rsplit('\t')
+            .next()
+            .unwrap()
+            .to_string();
+        let explained = run(&["explain", c, &id, "--bytes", "16"]);
+        let evidence: u64 = explained
+            .lines()
+            .find_map(|l| l.strip_prefix("  evidence offset "))
+            .and_then(|l| l.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{kind}: {explained}"));
+        let dump: Vec<u8> = explained
+            .lines()
+            .find_map(|l| l.strip_prefix("    00000000  "))
+            .unwrap()
+            .split_whitespace()
+            .take(16)
+            .map(|h| u8::from_str_radix(h, 16).unwrap())
+            .collect();
+        let mut at = [0u8; 16];
+        image.read_exact_at(evidence, &mut at).unwrap();
+        assert_eq!(dump, at, "{kind}: {explained}");
+        assert!(at.starts_with(starts), "{kind}: {explained}");
+        if kind == "windows.registry.key_written" {
+            assert_eq!(&at[4..6], b"nk", "{explained}");
+        }
+    }
 
     // E2: Security's 4624 events, as EvtxECmd lists them (827, the earliest record 406).
     let p = Project::open(case.as_path()).unwrap();

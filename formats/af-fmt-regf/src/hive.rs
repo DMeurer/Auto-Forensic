@@ -15,6 +15,8 @@ use std::io::Cursor;
 /// A parsed hive.
 pub struct Hive {
     parser: Parser,
+    /// The primary file, to read a key cell's size from (O3).
+    bytes: Vec<u8>,
     replay: Replay,
     /// Each key's subkeys once read, by the key's path in lower case (R5): notatin's own path
     /// lookup reads every sibling at each level again, which made a walk of a large SOFTWARE
@@ -73,6 +75,9 @@ pub struct Key {
     pub last_written: u64,
     pub subkeys: Vec<String>,
     pub values: Vec<Value>,
+    /// The key cell's offset in the primary file and its size (O3); with replayed logs the
+    /// file there may still hold the older cell.
+    pub cell: Option<(u64, u64)>,
 }
 
 /// One value as stored: the type number and the raw data.
@@ -108,6 +113,7 @@ impl Hive {
                 parser: parse(vec![])?,
                 replay,
                 children: HashMap::new(),
+                bytes: hive,
             });
         }
         let parser = match parse(logs) {
@@ -117,6 +123,7 @@ impl Hive {
                     parser: parse(vec![])?,
                     replay: Replay::Failed(e),
                     children: HashMap::new(),
+                    bytes: hive,
                 });
             }
         };
@@ -124,6 +131,7 @@ impl Hive {
             replay: replay_result(&parser),
             parser,
             children: HashMap::new(),
+            bytes: hive,
         })
     }
 
@@ -140,7 +148,7 @@ impl Hive {
             .iter()
             .map(|s| s.key_name.clone())
             .collect();
-        Some(to_key(&k, stored, subkeys))
+        Some(to_key(&k, stored, subkeys, &self.bytes))
     }
 
     /// Every key, depth first from the root in subkey list order, with its path (`\` between
@@ -163,6 +171,7 @@ impl Hive {
                     &node,
                     path.clone(),
                     kids.iter().map(|k| k.key_name.clone()).collect(),
+                    &self.bytes,
                 ),
             );
             for kid in kids.into_iter().rev() {
@@ -177,7 +186,14 @@ impl Hive {
     }
 }
 
-fn to_key(k: &CellKeyNode, path: String, subkeys: Vec<String>) -> Key {
+fn to_key(k: &CellKeyNode, path: String, subkeys: Vec<String>, hive: &[u8]) -> Key {
+    // A cell starts with its size, negative while in use.
+    let at = k.file_offset_absolute;
+    let cell = hive
+        .get(at..at + 4)
+        .map(|b| i32::from_le_bytes(b.try_into().expect("four bytes")).unsigned_abs())
+        .filter(|&n| n >= 4)
+        .map(|n| (at as u64, u64::from(n)));
     let values = k
         .value_iter()
         .map(|v| Value {
@@ -193,6 +209,7 @@ fn to_key(k: &CellKeyNode, path: String, subkeys: Vec<String>) -> Key {
         last_written: k.detail.last_key_written_date_and_time(),
         subkeys,
         values,
+        cell,
     }
 }
 

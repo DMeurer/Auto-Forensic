@@ -151,11 +151,11 @@ fn renamed_hives_are_identified() {
     );
     // R7: one key time per key, loose hives alike (SYSTEM: root and 4, SOFTWARE: root and 5).
     assert!(
-        status.contains("windows.registry.key_times v1: read, 5 items"),
+        status.contains("windows.registry.key_times v2: read, 5 items"),
         "{status}"
     );
     assert!(
-        status.contains("windows.registry.key_times v1: read, 6 items"),
+        status.contains("windows.registry.key_times v2: read, 6 items"),
         "{status}"
     );
     // A second run extracts nothing.
@@ -358,6 +358,7 @@ fn a_project_map_changes_af_events_output() {
             locator: "source.loose:1/evtx.record:42".into(),
             attrs: Some(event.into()),
             created_by: "windows.evtx.events".into(),
+            span: None,
         }])
         .unwrap();
     p.store

@@ -276,6 +276,8 @@ ALTER TABLE links ADD COLUMN IF NOT EXISTS reason VARCHAR;
 ALTER TABLE links ADD COLUMN IF NOT EXISTS key VARCHAR;
 ALTER TABLE links ADD COLUMN IF NOT EXISTS description VARCHAR;
 ALTER TABLE group_members ADD COLUMN IF NOT EXISTS why VARCHAR;
+ALTER TABLE records ADD COLUMN IF NOT EXISTS byte_length UBIGINT;
+ALTER TABLE records ADD COLUMN IF NOT EXISTS byte_within VARCHAR;
 ";
 
 /// An open project store.
@@ -294,6 +296,8 @@ pub struct RecordRow {
     /// The row's content as JSON text.
     pub attrs: Option<String>,
     pub created_by: String,
+    /// Where its bytes are (O3).
+    pub span: Option<af_core::runner::Span>,
 }
 
 /// One event row. The record and its attributes are stored separately.
@@ -360,7 +364,7 @@ impl Store {
                     r.system,
                     r.kind,
                     r.locator,
-                    None::<u64>,
+                    r.span.map(|s| s.offset),
                     None::<String>,
                     None::<String>,
                     None::<String>,
@@ -369,6 +373,8 @@ impl Store {
                     None::<String>,
                     r.attrs,
                     r.created_by,
+                    r.span.map(|s| s.length),
+                    r.span.map(|s| s.within.as_str()),
                 ])?;
             }
         }
@@ -563,6 +569,15 @@ impl Store {
             Ok((event_row(r)?, r.get(21)?, r.get(22)?))
         })?
         .collect()
+    }
+
+    /// The version of `plugin` that last ran on `system` (O3), from the run's outcomes.
+    pub fn plugin_version(&self, plugin: &str, system: u128) -> Result<Option<u32>, Error> {
+        self.conn.query_row(
+            "SELECT max(version) FROM outcomes WHERE plugin = ? AND system = ?",
+            params![plugin, system],
+            |r| r.get(0),
+        )
     }
 
     /// One event with its record's locator, or `None` if there is no such event.
@@ -864,6 +879,7 @@ mod tests {
             locator: format!("loc{id}"),
             attrs: Some("{}".into()),
             created_by: "test.plugin".into(),
+            span: None,
         };
         store
             .insert_records(&[
@@ -925,6 +941,7 @@ mod tests {
             locator: format!("loc{id}"),
             attrs: Some(attrs.into()),
             created_by: "test.plugin".into(),
+            span: None,
         };
         store
             .insert_records(&[

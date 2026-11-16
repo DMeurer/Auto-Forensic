@@ -38,12 +38,15 @@ pub struct Record {
     pub user_sid: Option<String>,
     /// The whole `Event` element: `System`, and `EventData` or `UserData`.
     pub event: Value,
+    /// The record's offset in the file and its size (O3), when its header was found.
+    pub span: Option<(u64, u64)>,
 }
 
 /// Reads every record of an event log. `Err` only if the data isn't an event log at all.
 // shortcut: the whole log is in memory (Security logs reach a few hundred MB at most); read
 // through `Read + Seek` if that's ever too much.
 pub fn read(data: Vec<u8>) -> Result<Log, String> {
+    let spans = record_spans(&data);
     let mut parser = EvtxParser::from_read_seek(Cursor::new(data)).map_err(|e| e.to_string())?;
     let header = parser.header();
     let bad_header = !header.validate_checksum();
@@ -72,12 +75,45 @@ pub fn read(data: Vec<u8>) -> Result<Log, String> {
                     computer: text(&system["Computer"]).unwrap_or_default(),
                     user_sid: text(&system["Security"]["#attributes"]["UserID"]),
                     event,
+                    span: spans.get(&r.event_record_id).copied(),
                 });
             }
             Err(e) => log.errors.push(e.to_string()),
         }
     }
     Ok(log)
+}
+
+/// Each record's offset and size by its record ID (O3): the file header takes 4 KiB, then
+/// come 64 KiB chunks, whose records start 512 bytes in, one after another, each with the
+/// signature `**\0\0`, its size and its ID.
+fn record_spans(data: &[u8]) -> std::collections::HashMap<u64, (u64, u64)> {
+    const HEADER: usize = 4096;
+    const CHUNK: usize = 65536;
+    let mut out = std::collections::HashMap::new();
+    let u32_at = |at: usize| {
+        data.get(at..at + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let mut chunk = HEADER;
+    while chunk + CHUNK <= data.len() {
+        if data[chunk..].starts_with(b"ElfChnk\0") {
+            let mut at = chunk + 512;
+            while at + 24 <= chunk + CHUNK && data[at..].starts_with(b"\x2a\x2a\0\0") {
+                let Some(size) = u32_at(at + 4).map(|n| n as usize).filter(|&n| n >= 24) else {
+                    break;
+                };
+                if at + size > chunk + CHUNK {
+                    break;
+                }
+                let id = u64::from_le_bytes(data[at + 8..at + 16].try_into().unwrap());
+                out.insert(id, (at as u64, size as u64));
+                at += size;
+            }
+        }
+        chunk += CHUNK;
+    }
+    out
 }
 
 /// A field's text: a string or number, or the `#text` of an element with attributes.
