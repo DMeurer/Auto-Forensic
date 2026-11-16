@@ -222,6 +222,52 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         assert!(status.lines().any(|l| l == line), "{line} in {status}");
     }
 
+    // O9: `af facts` lists the users, USB devices and network settings with their source.
+    let facts = |args: &[&str]| {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_af"))
+            .arg("facts")
+            .arg(case.as_path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    // One line per fact kind: 11 here, as this run has no browser plugin (no search terms).
+    assert_eq!(facts(&[]).lines().count(), 11);
+    let users = facts(&["--kind", "windows.user_profile"]);
+    assert_eq!(users.lines().count(), 4, "{users}");
+    assert!(
+        users
+            .lines()
+            .any(|l| l.contains("\"name\": \"jcloudy\"") && l.contains("\tLoneWolf.E01\t")),
+        "{users}"
+    );
+    let usb = facts(&["--kind", "windows.usb", "--events"]);
+    let sandisk: Vec<&str> = usb
+        .lines()
+        .filter(|l| l.starts_with("windows.usb_storage\tDisk&Ven_SanDisk"))
+        .collect();
+    assert_eq!(sandisk.len(), 2, "{usb}");
+    assert!(
+        sandisk.iter().all(|l| l.contains("\tLoneWolf.E01\t")),
+        "{usb}"
+    );
+    assert!(usb.contains("\n    named in log  "), "{usb}");
+    let network = facts(&["--kind", "windows.network"]);
+    assert_eq!(
+        network.lines().count(),
+        6,
+        "5 interfaces and a profile: {network}"
+    );
+    assert!(
+        network
+            .lines()
+            .any(|l| l.starts_with("windows.network.interface\tWi-Fi\t")
+                && l.contains("192.168.0.7")),
+        "{network}"
+    );
+
     // E2: Security's 4624 events, as EvtxECmd lists them (827, the earliest record 406).
     let p = Project::open(case.as_path()).unwrap();
     let db = p.store.connection();

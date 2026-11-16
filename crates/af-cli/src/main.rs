@@ -109,6 +109,20 @@ enum Command {
     /// Groups: show why each member is there, list them, and make your own (O8).
     #[command(subcommand)]
     Group(GroupCommand),
+    /// Facts (O9): without --kind, each kind with its count; with it, one tab-separated line per
+    /// fact: kind, subject, values, as of, source, linked events, ID.
+    Facts {
+        project: PathBuf,
+        /// Only kinds starting with this, such as windows.usb or windows.network.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Every fact, not the kinds.
+        #[arg(long)]
+        all: bool,
+        /// Each fact's linked events on indented lines below it.
+        #[arg(long)]
+        events: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -383,6 +397,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Command::List(cmd) => list_command(cmd, &mut out)?,
+        Command::Facts {
+            project,
+            kind,
+            all,
+            events,
+        } => facts(&project, kind.as_deref(), all, events, &mut out)?,
         Command::Group(cmd) => group_command(cmd, &mut out)?,
         Command::Comment(cmd) => match cmd {
             CommentCommand::Add { project, id, text } => {
@@ -720,6 +740,66 @@ fn write_group(
     }
     if members.len() > shown {
         writeln!(out, "  and {} more", members.len() - shown)?;
+    }
+    Ok(())
+}
+
+/// `af facts` (O9).
+fn facts(
+    project: &std::path::Path,
+    kind: Option<&str>,
+    all: bool,
+    events: bool,
+    out: &mut dyn Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use af_core::ids::{Endpoint, FactId};
+    let p = Project::open_read_only(project, wait())?;
+    let facts: Vec<_> = p
+        .store
+        .facts()?
+        .into_iter()
+        .filter(|f| kind.is_none_or(|k| f.kind.starts_with(k)))
+        .collect();
+    if kind.is_none() && !all {
+        let mut kinds: Vec<(String, String, usize)> = vec![];
+        for f in &facts {
+            match kinds.last_mut() {
+                Some((k, _, n)) if *k == f.kind => *n += 1,
+                _ => kinds.push((f.kind.clone(), f.created_by.clone(), 1)),
+            }
+        }
+        for (k, by, n) in kinds {
+            writeln!(out, "{k}\t{n}\tby {by}")?;
+        }
+        return Ok(());
+    }
+    let mut sources: std::collections::HashMap<u128, (String, String)> = Default::default();
+    for s in p.sources()? {
+        sources.insert(s.id.0, (s.label.clone(), p.as_of(s.id)?.display()));
+    }
+    let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
+    for f in &facts {
+        let links = p.store.links_of(&Endpoint::Fact(FactId(f.id)))?;
+        let linked: Vec<_> = links.iter().filter(|l| l.other_kind == "event").collect();
+        let (label, as_of) = sources
+            .get(&f.source)
+            .cloned()
+            .unwrap_or_else(|| ("?".into(), "as of unknown".into()));
+        writeln!(
+            out,
+            "{}\t{}\t{}\t{as_of}\t{label}\t{} events\t{:032x}",
+            f.kind,
+            clean(&f.subject),
+            clean(f.attrs.as_deref().unwrap_or("")),
+            linked.len(),
+            f.id
+        )?;
+        if events {
+            for l in linked {
+                let e = describe(&p, "event", l.other_id.expect("an event has an ID"))?;
+                writeln!(out, "    {}  {e}", l.label)?;
+            }
+        }
     }
     Ok(())
 }
