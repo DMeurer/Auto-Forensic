@@ -1,6 +1,8 @@
 # AutoForensic
 
-A forensic timeline tool for disk images, devices and loose files, with few, strong and labelled links between events. Early work: stage 2 (foundation) of the project plan.
+A forensic timeline tool for disk images, devices and loose files, with few, strong and labelled links between events. Work in progress.
+
+To use it, see the [user guide](docs/GUIDE.md).
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
 
