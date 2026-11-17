@@ -52,7 +52,7 @@ af facts PROJECT --kind windows.usb --events
 af users PROJECT
 ```
 
-- **`af events`** prints tab-separated lines in time order, all times in UTC. Event log entries get EvtxECmd's fields (description, user, payloads). The last column is the event's ID. `--kind` takes an exact kind.
+- **`af events`** prints tab-separated lines in time order, all times in UTC. Event log entries get EvtxECmd's fields (description, user, payloads). The last column is the event's ID. `--kind` takes an exact kind. After the rows come notes on the event log maps that were used, as lines starting with `#`, for example why an event may be missing.
 - **`af explain ID`** shows an event, group or fact:
   - its links, each with its label, strength (strong before possible) and the reason it exists;
   - the groups it is in;

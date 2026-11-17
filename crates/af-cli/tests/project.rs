@@ -407,7 +407,7 @@ fn a_project_map_changes_af_events_output() {
     std::fs::write(
         maps.join("mine.map"),
         "EventId: 4624\nChannel: Security\nProvider: Microsoft-Windows-Security-Auditing\n\
-         Description: My logon\nMaps:\n  - Property: PayloadData1\n    PropertyValue: \"who: %u%\"\n    \
+         Description: My logon\nNote: check the logon type\nMaps:\n  - Property: PayloadData1\n    PropertyValue: \"who: %u%\"\n    \
          Values:\n      - Name: u\n        Value: \"/Event/EventData/Data[@Name='TargetUserName']\"\n",
     )
     .unwrap();
@@ -419,4 +419,10 @@ fn a_project_map_changes_af_events_output() {
     let fields: Vec<&str> = line.split('\t').collect();
     assert_eq!(fields[3], "My logon");
     assert_eq!(fields[7], "who: jcloudy");
+    // The rows stream out first (O5), so the map's note comes last.
+    assert_eq!(
+        out.lines().last(),
+        Some("# note on event 4624 (My logon): check the logon type"),
+        "{out}"
+    );
 }

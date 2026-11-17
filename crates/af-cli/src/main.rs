@@ -1306,30 +1306,29 @@ fn events(
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let p = Project::open_read_only(project, wait())?;
-    let mut rows = vec![];
-    let notes = event_rows(&p, project, kind, false, limit, |r| {
-        rows.push(r);
-        Ok(())
-    })?;
+    let mut out = std::io::BufWriter::new(out);
     let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
-    for n in &notes {
-        writeln!(out, "{n}")?;
-    }
     writeln!(
         out,
         "time\tkind\tmeaning\tdescription\tuser_name\tremote_host\texecutable_info\t\
          payload_data1\tpayload_data2\tpayload_data3\tpayload_data4\tpayload_data5\tpayload_data6\t\
          record\tid"
     )?;
-    for r in &rows {
-        let mut cols = vec![r.time.clone(), r.kind.clone(), r.meaning.clone()];
-        cols.extend(r.mapped.iter().cloned());
-        cols.push(r.record.clone().unwrap_or_default());
+    // Rows go out as they are read (O5); the map notes, known only then, come after them.
+    let notes = event_rows(&p, project, kind, false, limit, |r| {
+        let mut cols = vec![r.time, r.kind, r.meaning];
+        cols.extend(r.mapped);
+        cols.push(r.record.unwrap_or_default());
         // L1: the ID `af explain` takes.
         cols.push(format!("{:032x}", r.id));
         let line = cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t");
         writeln!(out, "{line}")?;
+        Ok(())
+    })?;
+    for n in &notes {
+        writeln!(out, "{n}")?;
     }
+    out.flush()?;
     Ok(())
 }
 
