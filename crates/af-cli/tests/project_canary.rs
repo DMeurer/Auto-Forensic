@@ -243,7 +243,12 @@ fn project_canary() {
     }
     // L1: an event's links, label first: the analyst's link on the tagged event.
     let explained = af(&["explain", c, &format!("{tagged:x}")]);
-    let link_lines: Vec<&str> = explained.lines().filter(|l| l.contains(" <- ")).collect();
+    // Only direct links: when the tagged event is in the linked hive group (it depends on the
+    // random source IDs), the same link also shows "via group" (L7).
+    let link_lines: Vec<&str> = explained
+        .lines()
+        .filter(|l| l.contains(" <- ") && !l.contains("via group:"))
+        .collect();
     assert_eq!(link_lines.len(), 1, "{explained}");
     assert!(
         link_lines[0].starts_with("user.note  <- ") && link_lines[0].contains("[strong]"),
