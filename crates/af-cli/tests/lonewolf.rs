@@ -145,6 +145,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_windows::logons::Logons,
             &af_windows::moved::MovedTo,
             &af_windows::usb_connections::UsbConnections,
+            &af_windows::autorun_starts::AutorunStarts,
         ],
         &profiles,
     )
@@ -735,6 +736,9 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         ("group windows.logon.short", 3),
         ("group windows.logon.tokens", 25),
         ("group windows.same_file", 112),
+        // L3: Run values to their 9707 at each logon: SecurityHealth and Apoint 3 times,
+        // AKMonitor and jcloudy's OneDrive twice.
+        ("link windows.autorun_starts", 10),
         // L10: two logons that lasted 59 s, jcloudy's 09:19:58 to 09:55:16 (L4's session too),
         // and SAM's last logon.
         ("link windows.logon", 4),

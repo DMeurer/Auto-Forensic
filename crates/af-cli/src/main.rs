@@ -42,6 +42,7 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_windows::download::DownloadToUse,
     &af_windows::moved::MovedTo,
     &af_windows::usb_connections::UsbConnections,
+    &af_windows::autorun_starts::AutorunStarts,
     &af_linux::Wtmp,
     &af_linux::Passwd,
 ];
