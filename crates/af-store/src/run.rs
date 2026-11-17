@@ -45,9 +45,18 @@ pub struct RunSummary {
     pub events_loaded: u64,
 }
 
-/// Collects plugin output in a spool store.
-#[derive(Default)]
+/// Events, records and facts a spool sink holds before writing them out (O5): so a run's memory
+/// doesn't grow with the evidence.
+const SPOOL_BATCH: usize = 100_000;
+/// A spool store's memory limit: appending needs little.
+const SPOOL_MEMORY_LIMIT_MB: u32 = 512;
+
+/// Collects plugin output in a spool store. Events, records and facts are written every
+/// [`SPOOL_BATCH`] rows; links, groups and notes, which are few, at [`SpoolSink::finish`].
 struct SpoolSink {
+    store: Store,
+    /// The first write that failed; [`Sink`] methods can't return it.
+    error: Option<crate::Error>,
     events: Vec<EventRow>,
     facts: Vec<FactRow>,
     links: Vec<(NewLink, String)>,
@@ -55,6 +64,73 @@ struct SpoolSink {
     records: Vec<RecordRow>,
     /// (system, note, plugin)
     notes: Vec<(SystemId, String, String)>,
+}
+
+impl SpoolSink {
+    fn new(store: Store) -> Self {
+        Self {
+            store,
+            error: None,
+            events: vec![],
+            facts: vec![],
+            links: vec![],
+            groups: vec![],
+            records: vec![],
+            notes: vec![],
+        }
+    }
+
+    fn flush_if_full(&mut self) {
+        if self.events.len() + self.records.len() + self.facts.len() >= SPOOL_BATCH {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.error.is_some() {
+            return;
+        }
+        let written = self
+            .store
+            .insert_events(&self.events)
+            .and_then(|_| self.store.insert_facts(&self.facts))
+            .and_then(|_| self.store.insert_records(&self.records));
+        self.events.clear();
+        self.facts.clear();
+        self.records.clear();
+        self.error = written.err();
+    }
+
+    /// Writes the rest and closes the spool, so it can be attached.
+    fn finish(mut self) -> Result<(), ProjectError> {
+        self.flush();
+        if let Some(e) = self.error {
+            return Err(e.into());
+        }
+        let store = &mut self.store;
+        let mut by_plugin: HashMap<&str, Vec<(SystemId, String)>> = HashMap::new();
+        for (system, note, plugin) in &self.notes {
+            by_plugin
+                .entry(plugin)
+                .or_default()
+                .push((*system, note.clone()));
+        }
+        for (plugin, notes) in by_plugin {
+            store.save_system_notes(plugin, &notes)?;
+        }
+        for (g, by) in &self.groups {
+            store
+                .add_group(g.id, &g.kind, &g.reason, by)
+                .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
+            for (m, why) in &g.members {
+                store
+                    .add_member(g.id, m, Some(why), by)
+                    .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
+            }
+        }
+        store.add_links(&self.links)?;
+        Ok(())
+    }
 }
 
 impl Sink for SpoolSink {
@@ -75,6 +151,7 @@ impl Sink for SpoolSink {
             seq_no: e.seq.map(|s| s.no),
             created_by: plugin.as_str().into(),
         });
+        self.flush_if_full();
     }
     fn fact(&mut self, plugin: &Kind, system: SystemId, f: NewFact) {
         self.facts.push(FactRow {
@@ -86,6 +163,7 @@ impl Sink for SpoolSink {
             attrs: f.attrs,
             created_by: plugin.as_str().into(),
         });
+        self.flush_if_full();
     }
     fn link(&mut self, plugin: &Kind, l: NewLink) {
         self.links.push((l, plugin.as_str().into()));
@@ -104,6 +182,7 @@ impl Sink for SpoolSink {
             created_by: plugin.as_str().into(),
             span: r.span,
         });
+        self.flush_if_full();
     }
     fn note(&mut self, plugin: &Kind, system: SystemId, text: String) {
         self.notes.push((system, text, plugin.as_str().into()));
@@ -361,12 +440,12 @@ pub fn run_project(
             Target::new(s, caps, artifacts, Some(&opener))
         })
         .collect();
-    let mut sink = SpoolSink::default();
+    let spool_path = run_dir.path().join("spool.duckdb");
+    let mut sink = SpoolSink::new(Store::open(&spool_path, SPOOL_MEMORY_LIMIT_MB)?);
     let mut r = Run::new(plugins, &targets);
     r.phase(Phase::Index, &targets, None, &mut sink, &mut runs);
     r.phase(Phase::Extract, &targets, None, &mut sink, &mut runs);
-    let spool_path = run_dir.path().join("spool.duckdb");
-    save(&mut Store::open(&spool_path, 1024)?, &sink)?;
+    sink.finish()?;
 
     // 2. Write the project, briefly.
     let mut writer = Project::open(dir)?;
@@ -391,7 +470,8 @@ pub fn run_project(
     let mut events_loaded = writer.store.load_spools(&[&spool_path])?;
     // 3. Correlate reads the loaded project (L5), so it runs while the project is open for
     // writing. Its output goes through a spool of its own.
-    let mut correlated = SpoolSink::default();
+    let correlate_path = run_dir.path().join("correlate.duckdb");
+    let mut correlated = SpoolSink::new(Store::open(&correlate_path, SPOOL_MEMORY_LIMIT_MB)?);
     r.phase(
         Phase::Correlate,
         &targets,
@@ -399,8 +479,7 @@ pub fn run_project(
         &mut correlated,
         &mut runs,
     );
-    let correlate_path = run_dir.path().join("correlate.duckdb");
-    save(&mut Store::open(&correlate_path, 1024)?, &correlated)?;
+    correlated.finish()?;
     events_loaded += writer.store.load_spools(&[&correlate_path])?;
     let extracted = r.finish(&targets, &mut outcomes);
     writer.store.refresh_group_ranges()?;
@@ -425,34 +504,6 @@ pub fn run_project(
 }
 
 /// Writes what plugins produced into a fresh spool store.
-fn save(store: &mut Store, sink: &SpoolSink) -> Result<(), ProjectError> {
-    store.insert_events(&sink.events)?;
-    store.insert_facts(&sink.facts)?;
-    store.insert_records(&sink.records)?;
-    let mut by_plugin: HashMap<&str, Vec<(SystemId, String)>> = HashMap::new();
-    for (system, note, plugin) in &sink.notes {
-        by_plugin
-            .entry(plugin)
-            .or_default()
-            .push((*system, note.clone()));
-    }
-    for (plugin, notes) in by_plugin {
-        store.save_system_notes(plugin, &notes)?;
-    }
-    for (g, by) in &sink.groups {
-        store
-            .add_group(g.id, &g.kind, &g.reason, by)
-            .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-        for (m, why) in &g.members {
-            store
-                .add_member(g.id, m, Some(why), by)
-                .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-        }
-    }
-    store.add_links(&sink.links)?;
-    Ok(())
-}
-
 /// A path below a folder source as the locator step `fs.path` holds it.
 /// A source's file systems, each with the locator of what it sits on: the archive, or a volume
 /// of an image or device. Only NTFS volumes have an adapter so far; others, and NTFS volumes
@@ -566,6 +617,41 @@ mod tests {
             self.1.store(n, Ordering::SeqCst);
             Outcome::Ok(0)
         }
+    }
+
+    #[test]
+    fn a_spool_sink_writes_full_batches_and_keeps_every_event() {
+        let dir = std::env::temp_dir().join(format!("af-spool-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("spool.duckdb");
+        let mut sink = SpoolSink::new(Store::open(&path, SPOOL_MEMORY_LIMIT_MB).unwrap());
+        let plugin = Kind::new("test.many").unwrap();
+        for i in 0..=SPOOL_BATCH {
+            sink.event(
+                &plugin,
+                SystemId(1),
+                NewEvent {
+                    id: EventId(i as u128),
+                    source: SourceId(1),
+                    record: 1,
+                    kind: Kind::new("test.byte").unwrap(),
+                    meaning: TimeMeaning::new("test.read").unwrap(),
+                    time: Time::from_unix_seconds(1_700_000_000),
+                    clock: ClockDomainId("wall".into()),
+                    seq: None,
+                },
+            );
+        }
+        // One full batch is out already; the last event waits for `finish`.
+        assert_eq!(sink.events.len(), 1);
+        sink.finish().unwrap();
+        let n: usize = Store::open_read_only(&path)
+            .unwrap()
+            .connection()
+            .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, SPOOL_BATCH + 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

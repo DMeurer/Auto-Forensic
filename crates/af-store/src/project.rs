@@ -24,8 +24,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The store file inside a project folder.
 pub const STORE_FILE: &str = "project.duckdb";
-/// The memory limit for a project's store, the safe setting from stage 1.
-pub const MEMORY_LIMIT_MB: u32 = 5120;
+/// The memory limit for a project's store, read-only or not. 2 GB leaves a whole run room
+/// under 4 GB (O5, your limit); DuckDB spills larger sorts to disk.
+pub const MEMORY_LIMIT_MB: u32 = 2048;
 
 /// An open project.
 pub struct Project {
@@ -146,7 +147,11 @@ impl Project {
         let start = std::time::Instant::now();
         let store = loop {
             match Store::open_read_only(&path) {
-                Ok(s) => break s,
+                Ok(s) => {
+                    s.connection()
+                        .execute_batch(&format!("SET memory_limit = '{MEMORY_LIMIT_MB}MB';"))?;
+                    break s;
+                }
                 Err(e) if is_lock_error(&e) => {
                     if start.elapsed() >= wait {
                         return Err(ProjectError::Busy(dir.to_path_buf()));

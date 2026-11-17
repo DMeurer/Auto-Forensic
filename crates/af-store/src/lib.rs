@@ -1064,7 +1064,8 @@ mod tests {
                 .unwrap();
         }
         let start = std::time::Instant::now();
-        let mut project = Store::open(&dir.join("project.duckdb"), 5120).unwrap();
+        let mut project =
+            Store::open(&dir.join("project.duckdb"), crate::project::MEMORY_LIMIT_MB).unwrap();
         let refs: Vec<&Path> = spools.iter().map(|p| p.as_path()).collect();
         assert_eq!(project.load_spools(&refs).unwrap(), 100_000_000);
         eprintln!("loaded 100M in {:?}", start.elapsed());
