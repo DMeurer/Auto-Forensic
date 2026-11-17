@@ -932,7 +932,6 @@ fn export(
             }
         }
     }
-    let rows = event_rows(&p, project, kind, true, None)?;
     let file_out = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -957,11 +956,10 @@ fn export(
         )?;
     }
     let mut n = 0;
-    for r in rows
-        .rows
-        .iter()
-        .filter(|r| keep.as_ref().is_none_or(|k| k.contains(&r.id)))
-    {
+    let written = event_rows(&p, project, kind, true, None, |r| {
+        if keep.as_ref().is_some_and(|k| !k.contains(&r.id)) {
+            return Ok(());
+        }
         let no = vec![];
         let (t, l) = (
             tags.get(&r.id).unwrap_or(&no),
@@ -995,8 +993,14 @@ fn export(
             }
         }
         n += 1;
+        Ok(())
+    })
+    .and_then(|_| Ok(w.flush()?));
+    if let Err(e) = written {
+        // The rows are written as they are read, so a failure leaves a partial file.
+        let _ = std::fs::remove_file(file);
+        return Err(e);
     }
-    w.flush()?;
     Ok(n)
 }
 
@@ -1302,9 +1306,13 @@ fn events(
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let p = Project::open_read_only(project, wait())?;
-    let rows = event_rows(&p, project, kind, false, limit)?;
+    let mut rows = vec![];
+    let notes = event_rows(&p, project, kind, false, limit, |r| {
+        rows.push(r);
+        Ok(())
+    })?;
     let clean = |s: &str| s.replace(['\t', '\r', '\n'], " ");
-    for n in &rows.notes {
+    for n in &notes {
         writeln!(out, "{n}")?;
     }
     writeln!(
@@ -1313,7 +1321,7 @@ fn events(
          payload_data1\tpayload_data2\tpayload_data3\tpayload_data4\tpayload_data5\tpayload_data6\t\
          record\tid"
     )?;
-    for r in &rows.rows {
+    for r in &rows {
         let mut cols = vec![r.time.clone(), r.kind.clone(), r.meaning.clone()];
         cols.extend(r.mapped.iter().cloned());
         cols.push(r.record.clone().unwrap_or_default());
@@ -1339,20 +1347,17 @@ struct EventLine {
     data: Option<serde_json::Value>,
 }
 
-/// Events in timeline order with their map notes (`# note on event …`), for `af events` and
-/// `af export`. Maps: the project's `maps/*.map` first, then af's, then EvtxECmd's.
-struct EventRows {
-    notes: Vec<String>,
-    rows: Vec<EventLine>,
-}
-
+/// Events in timeline order, each to `each` as it is read, for `af events` and `af export`;
+/// returns their map notes (`# note on event …`). Maps: the project's `maps/*.map` first, then
+/// af's, then EvtxECmd's.
 fn event_rows(
     p: &Project,
     project: &std::path::Path,
     kind: Option<&str>,
     prefix: bool,
     limit: Option<u64>,
-) -> Result<EventRows, Box<dyn std::error::Error>> {
+    mut each: impl FnMut(EventLine) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     use af_windows::evtx_map::{EventMap, builtin_maps, map_event};
     let mut maps = vec![];
     if let Ok(dir) = std::fs::read_dir(project.join("maps")) {
@@ -1373,41 +1378,42 @@ fn event_rows(
         }
     }
     maps.extend(builtin_maps());
-    let mut rows = vec![];
     let mut used: Vec<usize> = vec![];
-    for (e, record, attrs) in p.store.event_list(kind, prefix, limit)? {
-        let time = Time::from_columns(&e.time)
-            .map(|t| t.display())
-            .unwrap_or_default();
-        let data: Option<serde_json::Value> =
-            attrs.as_deref().and_then(|a| serde_json::from_str(a).ok());
-        let mapped = match data.as_ref().and_then(|ev| map_event(&maps, ev)) {
-            Some((m, f)) => {
-                let i = maps.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(0);
-                if !used.contains(&i) {
-                    used.push(i);
+    p.store
+        .event_list(kind, prefix, limit, |e, record, attrs| {
+            let time = Time::from_columns(&e.time)
+                .map(|t| t.display())
+                .unwrap_or_default();
+            let data: Option<serde_json::Value> =
+                attrs.as_deref().and_then(|a| serde_json::from_str(a).ok());
+            let mapped = match data.as_ref().and_then(|ev| map_event(&maps, ev)) {
+                Some((m, f)) => {
+                    let i = maps.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(0);
+                    if !used.contains(&i) {
+                        used.push(i);
+                    }
+                    let mut cols =
+                        vec![f.description, f.user_name, f.remote_host, f.executable_info];
+                    cols.extend(f.payload);
+                    cols
                 }
-                let mut cols = vec![f.description, f.user_name, f.remote_host, f.executable_info];
-                cols.extend(f.payload);
-                cols
-            }
-            None => vec![String::new(); 10],
-        };
-        rows.push(EventLine {
-            id: e.id,
-            time,
-            ts: e.time.ts,
-            kind: e.kind,
-            meaning: e.meaning,
-            mapped,
-            record,
-            data,
-        });
-    }
+                None => vec![String::new(); 10],
+            };
+            each(EventLine {
+                id: e.id,
+                time,
+                ts: e.time.ts,
+                kind: e.kind,
+                meaning: e.meaning,
+                mapped,
+                record,
+                data,
+            })
+        })?;
     // A note shows when its map was used or its event was asked for, even with no events: it
     // says why one may be missing (such as an audit policy that was off).
     let asked = kind.and_then(|k| k.strip_prefix("windows.evtx.")?.parse::<u32>().ok());
-    let notes = maps
+    Ok(maps
         .iter()
         .enumerate()
         .filter(|(i, m)| used.contains(i) || asked == Some(m.event_id))
@@ -1418,6 +1424,5 @@ fn event_rows(
                 m.event_id, m.description
             ))
         })
-        .collect();
-    Ok(EventRows { notes, rows })
+        .collect())
 }
