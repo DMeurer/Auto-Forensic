@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "frnsc-prefetch"
 version = "0.13.4"
-source = "git+https://github.com/DMeurer/frnsc-prefetch?rev=2f15f029f869a8d0057d7144fc9bac22890f4591#2f15f029f869a8d0057d7144fc9bac22890f4591"
+source = "git+https://github.com/DMeurer/frnsc-prefetch?rev=137b4f8faa2068b54399d8d6b6bfa2bebdefe6d9#137b4f8faa2068b54399d8d6b6bfa2bebdefe6d9"
 dependencies = [
  "crc32fast",
  "forensic-rs",
