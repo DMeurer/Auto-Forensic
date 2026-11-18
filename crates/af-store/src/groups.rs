@@ -120,6 +120,56 @@ impl Store {
         Ok(())
     }
 
+    /// Plugin groups in bulk (G3: LoneWolf's file groups have 1.9M members), each with who made
+    /// it. Event and fact members are appended; group members go through
+    /// [`add_member`](Self::add_member) for its loop check.
+    pub fn add_groups(
+        &mut self,
+        groups: &[(af_core::runner::NewGroup, String)],
+    ) -> Result<(), GroupError> {
+        let members = || {
+            groups
+                .iter()
+                .flat_map(|(g, by)| g.members.iter().map(move |m| (g, by, m)))
+        };
+        if groups.iter().any(|(g, _)| g.reason.trim().is_empty()) {
+            return Err(GroupError::NoReason);
+        }
+        if members().any(|(_, _, (m, _))| matches!(m, Endpoint::File { .. })) {
+            return Err(GroupError::FileMember);
+        }
+        let tx = self.conn.transaction()?;
+        {
+            let mut app = tx.appender("groups")?;
+            for (g, by) in groups {
+                app.append_row(params![
+                    g.id.0,
+                    g.kind.as_str(),
+                    g.reason,
+                    None::<i64>,
+                    None::<i64>,
+                    by
+                ])?;
+            }
+            let mut app = tx.appender("group_members")?;
+            for (g, by, (m, why)) in members() {
+                let (kind, id) = match m {
+                    Endpoint::Event(e) => ("event", e.0),
+                    Endpoint::Fact(f) => ("fact", f.0),
+                    _ => continue,
+                };
+                app.append_row(params![g.id.0, kind, id, by, why])?;
+            }
+        }
+        tx.commit()?;
+        for (g, by, (m, why)) in members() {
+            if matches!(m, Endpoint::Group(_)) {
+                self.add_member(g.id, m, Some(why), by)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Sets every group's start and end from its members: events by time key, nested groups by
     /// their range. Members without a time are ignored. Run after a batch of changes.
     pub fn refresh_group_ranges(&mut self) -> Result<(), Error> {

@@ -280,7 +280,7 @@ type Candidate = (usize, bool, String);
 
 /// Entry and sequence from an `ntfs.file_ref` in hex: 6 bytes entry and 2 bytes sequence,
 /// little-endian.
-fn file_ref(hex: &str) -> Option<(u64, u16)> {
+pub(crate) fn file_ref(hex: &str) -> Option<(u64, u16)> {
     let v = u64::from_str_radix(hex, 16).ok()?.swap_bytes();
     (hex.len() == 16).then_some((v & 0xFFFF_FFFF_FFFF, (v >> 48) as u16))
 }

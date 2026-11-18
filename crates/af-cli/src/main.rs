@@ -37,6 +37,8 @@ const PLUGINS: &[&dyn Plugin] = &[
     &af_core::fs_timeline::Timeline,
     &af_windows::usn::Journal,
     &af_windows::same_file::SameFile,
+    &af_windows::file_groups::FileGroups,
+    &af_windows::program_runs::ProgramRuns,
     &af_windows::sessions::Sessions,
     &af_windows::logons::Logons,
     &af_windows::download::DownloadToUse,
@@ -85,14 +87,19 @@ enum Command {
     Users { project: PathBuf },
     /// Events in timeline order as tab-separated lines. Event log records get EvtxECmd's fields
     /// from maps: the project's `maps/*.map` first, then af's, then EvtxECmd's (compiled in).
+    /// A file's `$MFT` and journal events on one day show as one `windows.file` line with the
+    /// file group's ID (G3); --expand shows every event.
     Events {
         project: PathBuf,
         /// Only events of this kind, such as `windows.evtx.4624`.
         #[arg(long)]
         kind: Option<String>,
-        /// At most this many events.
+        /// At most this many lines.
         #[arg(long)]
         limit: Option<u64>,
+        /// One line per event, files not folded.
+        #[arg(long)]
+        expand: bool,
     },
     /// One event, group or fact and its links, each with its label first, strong before possible
     /// (L1), then the groups it is in with their links (L7). The event ID is the last column of
@@ -397,7 +404,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             project,
             kind,
             limit,
-        } => events(&project, kind.as_deref(), limit, &mut out)?,
+            expand,
+        } => events(&project, kind.as_deref(), limit, !expand, &mut out)?,
         Command::Explain { project, id, bytes } => explain(&project, &id, bytes, &mut out)?,
         Command::Tag(cmd) => match cmd {
             TagCommand::Add { project, id, tag } => {
@@ -957,7 +965,7 @@ fn export(
         )?;
     }
     let mut n = 0;
-    let written = event_rows(&p, project, kind, true, None, |r| {
+    let written = event_rows(&p, project, kind, true, None, false, |r| {
         if keep.as_ref().is_some_and(|k| !k.contains(&r.id)) {
             return Ok(());
         }
@@ -1304,6 +1312,7 @@ fn events(
     project: &std::path::Path,
     kind: Option<&str>,
     limit: Option<u64>,
+    fold: bool,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let p = Project::open_read_only(project, wait())?;
@@ -1316,12 +1325,40 @@ fn events(
          record\tid"
     )?;
     // Rows go out as they are read (O5); the map notes, known only then, come after them.
-    let notes = event_rows(&p, project, kind, false, limit, |r| {
-        let mut cols = vec![r.time, r.kind, r.meaning];
-        cols.extend(r.mapped);
-        cols.push(r.record.unwrap_or_default());
-        // L1: the ID `af explain` takes.
-        cols.push(format!("{:032x}", r.id));
+    let notes = event_rows(&p, project, kind, false, limit, fold, |r| {
+        let cols = match r.fold {
+            // G3: the file group, with what `af explain` and `af group show` take.
+            Some(f) => {
+                let last = f
+                    .last
+                    // A time key counts 100 ns from 1601-01-01 UTC.
+                    .and_then(|ts| u64::try_from(ts).ok())
+                    .map(|ts| Time::from_ticks_1601(ts).display())
+                    .unwrap_or_default();
+                let mut cols = vec![
+                    r.time,
+                    "windows.file".to_string(),
+                    format!("{} events until {last}", f.events),
+                    f.reason,
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    f.kinds,
+                ];
+                cols.extend(std::iter::repeat_n(String::new(), 5));
+                cols.push(String::new());
+                cols.push(format!("{:032x}", f.group));
+                cols
+            }
+            None => {
+                let mut cols = vec![r.time, r.kind, r.meaning];
+                cols.extend(r.mapped);
+                cols.push(r.record.unwrap_or_default());
+                // L1: the ID `af explain` takes.
+                cols.push(format!("{:032x}", r.id));
+                cols
+            }
+        };
         let line = cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t");
         writeln!(out, "{line}")?;
         Ok(())
@@ -1345,6 +1382,8 @@ struct EventLine {
     record: Option<String>,
     /// The record's content.
     data: Option<serde_json::Value>,
+    /// A file group's events of one day, folded into this line (G3).
+    fold: Option<af_store::Fold>,
 }
 
 /// Events in timeline order, each to `each` as it is read, for `af events` and `af export`;
@@ -1356,6 +1395,7 @@ fn event_rows(
     kind: Option<&str>,
     prefix: bool,
     limit: Option<u64>,
+    fold: bool,
     mut each: impl FnMut(EventLine) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     use af_windows::evtx_map::{EventMap, builtin_maps, map_event};
@@ -1380,7 +1420,7 @@ fn event_rows(
     maps.extend(builtin_maps());
     let mut used: Vec<usize> = vec![];
     p.store
-        .event_list(kind, prefix, limit, |e, record, attrs| {
+        .event_list(kind, prefix, limit, fold, |e, record, attrs, folded| {
             let time = Time::from_columns(&e.time)
                 .map(|t| t.display())
                 .unwrap_or_default();
@@ -1408,6 +1448,7 @@ fn event_rows(
                 mapped,
                 record,
                 data,
+                fold: folded,
             })
         })?;
     // A note shows when its map was used or its event was asked for, even with no events: it

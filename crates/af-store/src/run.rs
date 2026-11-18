@@ -118,16 +118,9 @@ impl SpoolSink {
         for (plugin, notes) in by_plugin {
             store.save_system_notes(plugin, &notes)?;
         }
-        for (g, by) in &self.groups {
-            store
-                .add_group(g.id, &g.kind, &g.reason, by)
-                .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-            for (m, why) in &g.members {
-                store
-                    .add_member(g.id, m, Some(why), by)
-                    .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
-            }
-        }
+        store
+            .add_groups(&self.groups)
+            .map_err(|e| ProjectError::from(std::io::Error::other(e.to_string())))?;
         store.add_links(&self.links)?;
         Ok(())
     }

@@ -52,7 +52,7 @@ af facts PROJECT --kind windows.usb --events
 af users PROJECT
 ```
 
-- **`af events`** prints tab-separated lines in time order, all times in UTC. Event log entries get EvtxECmd's fields (description, user, payloads). The last column is the event's ID. `--kind` takes an exact kind. After the rows come notes on the event log maps that were used, as lines starting with `#`, for example why an event may be missing.
+- **`af events`** prints tab-separated lines in time order, all times in UTC. Event log entries get EvtxECmd's fields (description, user, payloads). The last column is the event's ID. `--kind` takes an exact kind. A file's `$MFT` and change journal events on one day (UTC) show as one `windows.file` line: how many events until when, the file's path and reference, and its event kinds. Its last column is the file group's ID, for `af group show`. `--expand` shows every event instead; `af export` always does. After the rows come notes on the event log maps that were used, as lines starting with `#`, for example why an event may be missing.
 - **`af explain ID`** shows an event, group or fact:
   - its links, each with its label, strength (strong before possible) and the reason it exists;
   - the groups it is in;
@@ -81,7 +81,7 @@ af group show PROJECT GROUP_ID
 
 - **Tags and comments** work on events, groups and facts.
 - **Lists** hold events and groups in the order you added them. `af list add` can also copy in a group's members (`--from-group`) or another list (`--from-list`).
-- **Groups** are made by the rules (sessions, root keys and so on) and by you. `af group show` gives the reason for every member. Only your own groups can be changed.
+- **Groups** are made by the rules (sessions, root keys, one per file, deleted files, program runs and so on) and by you. A program run is a Prefetch run time with the BAM entry of its last run and the journal events, until Windows writes the Prefetch file (at most 60 s), of the program, its Prefetch file and the files it lists. A deleted file is its journal creation and deletion, and its `$MFT` entry where that is left. `af group show` gives the reason for every member. Only your own groups can be changed.
 
 ## Export
 

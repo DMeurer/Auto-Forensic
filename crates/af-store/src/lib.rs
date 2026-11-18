@@ -300,6 +300,21 @@ pub struct RecordRow {
     pub span: Option<af_core::runner::Span>,
 }
 
+/// Time keys per day: they count 100 ns from midnight, 1601-01-01 UTC.
+const TICKS_PER_DAY: i64 = 864_000_000_000;
+
+/// A file group's events on one day, folded into one timeline item (G3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fold {
+    pub group: u128,
+    pub events: i64,
+    /// The time key of its last event.
+    pub last: Option<i64>,
+    /// Its events' kinds, sorted, joined with `, `.
+    pub kinds: String,
+    pub reason: String,
+}
+
 /// One event row. The record and its attributes are stored separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
@@ -551,24 +566,69 @@ impl Store {
 
     /// Events in timeline order (no time last, then by sequence) with their record's locator
     /// and attributes, of one kind if given, at most `limit`. Each goes to `each` as it is read,
-    /// so a large project's events are never all in memory at once (O5).
+    /// so a large project's events are never all in memory at once (O5). With `fold` (G3), the
+    /// events of one `windows.file` group on one UTC day come as one item: its first event with
+    /// a [`Fold`].
     pub fn event_list<E: From<Error>>(
         &self,
         kind: Option<&str>,
         prefix: bool,
         limit: Option<u64>,
-        mut each: impl FnMut(EventRow, Option<String>, Option<String>) -> Result<(), E>,
+        fold: bool,
+        mut each: impl FnMut(EventRow, Option<String>, Option<String>, Option<Fold>) -> Result<(), E>,
     ) -> Result<(), E> {
         // `prefix` (O2): `kind` starts the kind, as `windows.evtx` does every event log event.
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {EVENT_COLUMNS}, r.locator, r.attrs FROM events e LEFT JOIN records r ON r.id = e.record \
-             WHERE ?1 IS NULL OR e.kind = ?1 OR (?3 AND starts_with(e.kind, ?1)) \
-             ORDER BY e.ts NULLS LAST, e.seq_domain, e.seq_no, e.id LIMIT ?2"
-        ))?;
+        let filter = "?1 IS NULL OR e.kind = ?1 OR (?3 AND starts_with(e.kind, ?1))";
+        let order = "ORDER BY e.ts NULLS LAST, e.seq_domain, e.seq_no, e.id LIMIT ?2";
+        let sql = if fold {
+            // An event is in at most one file group (one file reference per record).
+            format!(
+                "WITH f AS (
+                   SELECT e.id, e.ts, e.kind, m.grp FROM events e
+                   LEFT JOIN (SELECT m.member_id, any_value(m.grp) AS grp FROM group_members m
+                              JOIN groups g ON g.id = m.grp
+                              WHERE g.kind = 'windows.file' AND m.member_kind = 'event'
+                              GROUP BY m.member_id) m ON m.member_id = e.id
+                   WHERE {filter}),
+                 folds AS (
+                   SELECT arg_min(id, (ts, id)) AS id, grp, count(*) AS n, max(ts) AS last,
+                          string_agg(DISTINCT kind, ', ' ORDER BY kind) AS kinds
+                   FROM f WHERE grp IS NOT NULL GROUP BY grp, ts // {TICKS_PER_DAY}),
+                 items AS (
+                   SELECT id, NULL::UHUGEINT AS grp, NULL::BIGINT AS n, NULL::BIGINT AS last,
+                          NULL::VARCHAR AS kinds FROM f WHERE grp IS NULL
+                   UNION ALL SELECT id, grp, n, last, kinds FROM folds)
+                 SELECT {EVENT_COLUMNS}, r.locator, r.attrs, i.grp, i.n, i.last, i.kinds, g.reason
+                 FROM items i JOIN events e ON e.id = i.id
+                 LEFT JOIN records r ON r.id = e.record LEFT JOIN groups g ON g.id = i.grp
+                 {order}"
+            )
+        } else {
+            format!(
+                "SELECT {EVENT_COLUMNS}, r.locator, r.attrs FROM events e \
+                 LEFT JOIN records r ON r.id = e.record WHERE {filter} {order}"
+            )
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
         let limit = i64::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(i64::MAX);
         let mut rows = stmt.query(params![kind, limit, prefix])?;
         while let Some(r) = rows.next()? {
-            each(event_row(r)?, r.get(21)?, r.get(22)?)?;
+            let folded = if fold {
+                r.get::<_, Option<u128>>(23)?
+                    .map(|group| -> Result<Fold, Error> {
+                        Ok(Fold {
+                            group,
+                            events: r.get(24)?,
+                            last: r.get(25)?,
+                            kinds: r.get(26)?,
+                            reason: r.get(27)?,
+                        })
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+            each(event_row(r)?, r.get(21)?, r.get(22)?, folded)?;
         }
         Ok(())
     }

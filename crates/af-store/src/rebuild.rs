@@ -87,12 +87,26 @@ impl Store {
             .prepare(&groups)?
             .query_map(params![plugin, system], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
-        for g in doomed {
+        // In one go, not one statement per group: LoneWolf's file groups are 200,000 (G3). One
+        // text parameter, as IDs above i128 don't fit a plain integer literal.
+        let ids = doomed
+            .iter()
+            .map(u128::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let list = "(SELECT unnest(string_split($1, ','))::UHUGEINT)";
+        if !doomed.is_empty() {
             tx.execute(
-                "DELETE FROM group_members WHERE grp = ? OR (member_kind = 'group' AND member_id = ?)",
-                params![g, g],
+                &format!(
+                    "DELETE FROM group_members WHERE grp IN {list} \
+                     OR (member_kind = 'group' AND member_id IN {list})"
+                ),
+                params![ids],
             )?;
-            tx.execute("DELETE FROM groups WHERE id = ?", params![g])?;
+            tx.execute(
+                &format!("DELETE FROM groups WHERE id IN {list}"),
+                params![ids],
+            )?;
         }
         tx.commit()?;
         Ok(())

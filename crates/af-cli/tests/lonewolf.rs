@@ -141,6 +141,8 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
             &af_core::fs_timeline::Timeline,
             &af_windows::usn::Journal,
             &af_windows::same_file::SameFile,
+            &af_windows::file_groups::FileGroups,
+            &af_windows::program_runs::ProgramRuns,
             &af_windows::sessions::Sessions,
             &af_windows::logons::Logons,
             &af_windows::moved::MovedTo,
@@ -292,7 +294,7 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         ("windows.evtx.4624", b"**\0\0"),
         ("windows.registry.key_written", b""),
     ] {
-        let line = run(&["events", c, "--kind", kind, "--limit", "1"]);
+        let line = run(&["events", c, "--kind", kind, "--limit", "1", "--expand"]);
         let id = line
             .lines()
             .last()
@@ -731,10 +733,17 @@ fn lonewolf_gives_its_windows_system_with_hives_event_logs_and_prefetch() {
         .map(Result::unwrap)
         .collect();
     let want = [
+        // G2: as MFTECmd's `$J` and `$MFT` give them (~/af-stage3/m5), 3,072 with their entry left.
+        ("group windows.deleted_file", 46_023),
+        // G3: every `$MFT` and journal event of LoneWolf is in one.
+        ("group windows.file", 198_616),
         ("group windows.hive.root", 11),
         // L10: one boot's 36 logons of jcloudy under 10 s are one of these.
         ("group windows.logon.short", 3),
         ("group windows.logon.tokens", 25),
+        // G1: one per Prefetch run time; 273 have no Prefetch write in the journal, which starts
+        // on 2018-04-01.
+        ("group windows.program_run", 695),
         ("group windows.same_file", 112),
         // L3: Run values to their 9707 at each logon: SecurityHealth and Apoint 3 times,
         // AKMonitor and jcloudy's OneDrive twice.
